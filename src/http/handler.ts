@@ -4,16 +4,17 @@
 //   POST /checkout      kiosk -> start (or join) a checkout; returns the checkout id
 //   GET  /checkout/:id  kiosk and staff screens poll this; the facts, not a single status
 //   POST /webhooks/bank provider -> signed event
-//   POST /worker/tick   scheduler -> run operations for up to `budgetMs`
+//   POST /worker/tick   scheduler -> run operations, then reconcile with the bank
 //
-// Supabase limits to keep in mind (supabase.com/docs/guides/functions/limits, read 28 Sep 2026):
-// 2 s CPU per request excluding async I/O, 150 s request idle timeout, 150 s (Free) or 400 s
-// (paid) worker wall clock. The tick is I/O bound and stops well before those.
+// Supabase limits (supabase.com/docs/guides/functions/limits, read 28 Sep 2026): 2 s CPU per
+// request excluding async I/O, 150 s request idle timeout, 150 s (Free) or 400 s (paid) worker
+// wall clock. The tick stops STARTING new work after `budgetMs`; it does not bound a provider
+// call already in flight, so adapters need their own request timeouts (not in this sample).
 
 import type { Sql } from "../db.ts";
 import type { Clock } from "../clock.ts";
 import type { BankAdapter, PosAdapter } from "../adapters/types.ts";
-import { ingestBankWebhook, reconciliation, startCheckout } from "../service.ts";
+import { ingestBankWebhook, pollUnsettledCaptures, reconciliation, startCheckout } from "../service.ts";
 import { runOnce } from "../worker.ts";
 
 export interface HandlerDeps {
@@ -116,7 +117,10 @@ export function makeHandler(d: HandlerDeps) {
           leaseSeconds: 60,
         })
       ) ran++;
-      return json(200, { ran });
+      // Reconciliation runs on every tick, after the operations: the same scheduled entry point
+      // that moves checkouts forward also finds lost bank notices.
+      const reconciled = await pollUnsettledCaptures(d.sql, d.clock, d.bank);
+      return json(200, { ran, reconciled });
     }
 
     return json(404, { error: "no_route" });

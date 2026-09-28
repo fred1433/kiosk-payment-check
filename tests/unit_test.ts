@@ -1,5 +1,5 @@
 // Pure functions: no database.
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { addBankingDays, isLateNotice, returnDeadlines } from "../src/ach.ts";
 import { signWebhook, verifyWebhook } from "../src/webhook_signature.ts";
 import { decide, LIMITS, type OperationRow, type Snapshot } from "../src/workflow.ts";
@@ -21,6 +21,7 @@ const snap: Snapshot = {
   orderState: "submitted",
   saleTotalCents: null,
   ackState: "not_sent",
+  posIdempotentSubmit: true,
 };
 const op = (kind: OperationRow["kind"], attempts = 1, seq = 1, input = {}): OperationRow => ({
   id: "o",
@@ -39,6 +40,8 @@ Deno.test("administrative returns: 2 banking days after settlement, skipping wee
   assertEquals(addBankingDays("2026-09-25", 2), "2026-09-29"); // Fri -> Tue
   assertEquals(addBankingDays("2026-10-09", 2), "2026-10-14"); // Fri, Columbus Day Mon 12 -> Wed 14
   assertEquals(returnDeadlines("2026-09-29").consumerUnauthorized, "2026-11-28");
+  assertEquals(returnDeadlines("2026-12-31").administrative, "2027-01-05"); // Jan 1 2027 closed, then a weekend
+  assertThrows(() => addBankingDays("2027-12-30", 2), Error, "unsupported_calendar_year");
 });
 
 Deno.test("a return received after its bank deadline is flagged, not dropped", () => {

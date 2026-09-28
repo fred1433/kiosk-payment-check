@@ -69,6 +69,15 @@ export interface PosStatus {
   paymentStatus: PosPaymentStatus;
   saleTotalCents: number | null;
   message?: string;
+  /** Present only when the adapter can list the register's payments with their references. */
+  payments?: { ref: string; amountCents: number }[];
+}
+
+export interface PosCapabilities {
+  /** The register lists recorded payments with their references (not in Cova's documented status). */
+  paymentReferenceLookup: boolean;
+  /** Re-sending an order under the same id never creates a second order (to confirm per POS). */
+  idempotentSubmitById: boolean;
 }
 
 export interface CartLine {
@@ -80,6 +89,7 @@ export interface CartLine {
 
 export interface PosAdapter {
   readonly name: string;
+  readonly capabilities: PosCapabilities;
   submitOrder(
     req: { posOrderId: string; lines: CartLine[]; reference: string },
   ): Promise<Call<Record<string, never>>>;

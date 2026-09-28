@@ -51,6 +51,7 @@ export async function loadSnapshot(sql: Sql, checkoutId: string): Promise<Snapsh
     orderState: r.order_state as string,
     saleTotalCents: r.sale_total_cents as number | null,
     ackState: r.ack_state as string,
+    posIdempotentSubmit: true,
   };
 }
 
@@ -110,8 +111,19 @@ export async function runOnce(d: WorkerDeps): Promise<boolean> {
   op.input = typeof op.input === "string" ? JSON.parse(op.input) : op.input;
   const snap = await loadSnapshot(d.sql, op.checkout_id);
 
+  snap.posIdempotentSubmit = d.pos.capabilities.idempotentSubmitById;
+
   let decision: Decision;
-  if (op.attempts > 1 && mustNotRepeat(op.kind) && !d.bank.capabilities.idempotencyKeys) {
+  if (op.kind === "pos_submit_order" && op.attempts > 1 && !d.pos.capabilities.idempotentSubmitById) {
+    // A previous attempt may have reached the register; re-sending could create a second order.
+    // Read the register's status under our id instead.
+    decision = {
+      op_state: "done",
+      outcome: "not_resent_status_first",
+      note: "POS deduplication by id not established",
+      next: [{ kind: "pos_check_order", seq: op.seq, delay_seconds: 0 }],
+    };
+  } else if (op.attempts > 1 && mustNotRepeat(op.kind) && !d.bank.capabilities.idempotencyKeys) {
     // A previous attempt may have reached the provider, and the provider cannot tell us.
     // Repeating could create a second debit. Stop and ask a person.
     decision = {

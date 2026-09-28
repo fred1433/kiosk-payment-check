@@ -28,14 +28,22 @@ Deno.test("T1 a return whose notice is lost after settlement is found by the rec
   await w.close();
 });
 
-Deno.test("T1b after the 60-day window the reconciler stops reading a settled capture", async () => {
+Deno.test("T1b the watch on a settled capture closes only after a successful read past 65 days", async () => {
   const w = await makeWorld();
   await w.checkout();
   await w.run();
   w.bank.settle([...w.bank.payments.keys()][0], "2026-09-29");
   await w.deliver();
   w.clock.advanceDays(62);
-  const before = w.bank.calls.get;
+  let before = w.bank.calls.get;
+  await pollUnsettledCaptures(w.sql, w.clock, w.bank);
+  assertEquals(w.bank.calls.get, before + 1); // day 62: still watched
+  w.clock.advanceDays(5);
+  w.bank.faults.get = ["server_error"];
+  await pollUnsettledCaptures(w.sql, w.clock, w.bank); // failed read: watch stays open
+  await pollUnsettledCaptures(w.sql, w.clock, w.bank); // successful read past the window: closes
+  before = w.bank.calls.get;
+  w.clock.advanceDays(1);
   await pollUnsettledCaptures(w.sql, w.clock, w.bank);
   assertEquals(w.bank.calls.get, before);
   await w.close();
@@ -103,7 +111,7 @@ Deno.test("T5 boundary: cash taken at the counter and NOT recorded at the regist
   const rec = await reconciliation(w.sql, id);
   // What the module says is true of the register; the unrecorded cash is outside any system it reads.
   assertEquals(rec.outcome, "ready_for_pickup");
-  assertEquals(rec.outcome_reason, "Paid. The register shows the payment.");
+  assertEquals(rec.outcome_reason, "Paid. The register shows our bank payment.");
   assert(w.pos.registerShowsPaid());
   await w.close();
 });
@@ -120,6 +128,62 @@ Deno.test("T6 cash recorded at the register while the capture is in flight is fl
   const rec = await reconciliation(w.sql, id);
   assertEquals(w.bank.debitsAccepted(), 1);
   assertEquals(rec.outcome, "needs_staff");
-  assert(rec.outcome_reason?.includes("Possible double collection"));
+  assert(rec.outcome_reason?.includes("does not establish whether it is our bank payment"));
+  await w.close();
+});
+
+Deno.test("T7 assumption-negative: if the register did NOT deduplicate by id while declared to, a replay makes two order records", async () => {
+  // Documents the production prerequisite behind idempotentSubmitById: the module relies on it.
+  const w2 = await makeWorld({ pos: { putIsIdempotentById: false, declareIdempotentSubmit: true } });
+  await w2.checkout();
+  await w2.run({
+    afterCall: (op) => {
+      if (op.kind === "pos_submit_order" && op.attempts === 1) throw new WorkerCrash("died");
+    },
+  });
+  assertEquals(w2.pos.ordersCreated(), 2);
+  await w2.close();
+  const w3 = await makeWorld({ pos: { putIsIdempotentById: false, declareIdempotentSubmit: false } });
+  await w3.checkout();
+  await w3.run({
+    afterCall: (op) => {
+      if (op.kind === "pos_submit_order" && op.attempts === 1) throw new WorkerCrash("died");
+    },
+  });
+  assertEquals(w3.pos.ordersCreated(), 1); // not declared: status read first, no replay
+  await w3.close();
+});
+
+Deno.test("T8 a known return is not cleared by a later register reading (direct SQL guard)", async () => {
+  const w = await makeWorld();
+  const r = await w.checkout();
+  const id = r.ok ? r.checkoutId : "";
+  await w.run();
+  const ref = [...w.bank.payments.keys()][0];
+  w.bank.settle(ref, "2026-09-29");
+  w.bank.returnDebit(ref, "R01", "2026-10-01");
+  await w.deliver();
+  const [op] = await w.sql.query<{ id: string }>(
+    `select id from kiosk.operations where checkout_id = $1 limit 1`,
+    [id],
+  );
+  await w.sql.query(
+    `update kiosk.operations set state = 'claimed', claim_token = '00000000-0000-4000-8000-000000000001' where id = $1`,
+    [op.id],
+  );
+  await w.sql.query(
+    `select kiosk.finish_operation($1, '00000000-0000-4000-8000-000000000001', $2::text::jsonb, now())`,
+    [
+      op.id,
+      JSON.stringify({
+        op_state: "done",
+        outcome: "x",
+        checkout_outcome: "ready_for_pickup",
+        checkout_reason: "Paid.",
+      }),
+    ],
+  );
+  const rec = await reconciliation(w.sql, id);
+  assertEquals(rec.outcome, "needs_staff");
   await w.close();
 });

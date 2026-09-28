@@ -43,6 +43,8 @@ create table kiosk.checkouts (
   quoted_total_cents integer not null check (quoted_total_cents > 0),
   fee_cents          integer not null default 0 check (fee_cents >= 0),
   cart               jsonb not null,
+  -- hash of everything that defines the intent; a reused kiosk_request_id must match it exactly
+  intent_fingerprint text not null,
   -- normalized summary for the kiosk and staff screens; the facts live in the tables below
   outcome            text not null default 'in_progress' check (outcome in (
                        'in_progress', 'ready_for_pickup', 'no_charge', 'needs_new_consent',
@@ -67,6 +69,8 @@ create table kiosk.bank_payments (
   refund_ref            text unique,
   refund_amount_cents   integer,
   raw_provider_state    jsonb not null default '{}'::jsonb,
+  -- set once the bank has been read successfully after the consumer return window closed
+  return_watch_closed_at timestamptz,
   updated_at            timestamptz not null default now(),
   -- a capture can never exceed what the shopper preauthorized (R11 territory otherwise)
   constraint capture_within_preauth check (
@@ -188,6 +192,7 @@ security definer set search_path = kiosk, pg_temp as $$
 declare
   v_ref kiosk.saved_bank_refs;
   v_id uuid;
+  v_fp text;
   v_existing kiosk.checkouts;
 begin
   select * into v_ref from kiosk.saved_bank_refs where id = p_saved_ref;
@@ -198,16 +203,19 @@ begin
     raise exception 'reauthentication_required';
   end if;
 
+  v_fp := encode(sha256(convert_to(jsonb_build_object(
+            'store', p_store, 'shopper', p_shopper, 'saved_ref', p_saved_ref,
+            'quoted_total_cents', p_quoted_total_cents, 'fee_cents', p_fee_cents, 'cart', p_cart)::text, 'UTF8')), 'hex');
   insert into kiosk.checkouts (store_id, shopper_id, kiosk_request_id, saved_ref_id,
-                               quoted_total_cents, fee_cents, cart, created_at)
-  values (p_store, p_shopper, p_kiosk_request_id, p_saved_ref, p_quoted_total_cents, p_fee_cents, p_cart, p_now)
+                               quoted_total_cents, fee_cents, cart, intent_fingerprint, created_at)
+  values (p_store, p_shopper, p_kiosk_request_id, p_saved_ref, p_quoted_total_cents, p_fee_cents, p_cart, v_fp, p_now)
   on conflict (store_id, kiosk_request_id) do nothing
   returning id into v_id;
 
   if v_id is null then
     select * into v_existing from kiosk.checkouts c
       where c.store_id = p_store and c.kiosk_request_id = p_kiosk_request_id;
-    if v_existing.shopper_id <> p_shopper or v_existing.quoted_total_cents <> p_quoted_total_cents then
+    if v_existing.intent_fingerprint <> v_fp then
       raise exception 'kiosk_request_id_reused_with_different_checkout';
     end if;
     perform kiosk.log(v_existing.id, 'kiosk', 'duplicate_submission_joined', '{}'::jsonb, p_now);
@@ -275,6 +283,9 @@ declare
   v_b jsonb := p_decision -> 'bank';
   v_p jsonb := p_decision -> 'pos';
   v_a jsonb := p_decision -> 'ack';
+  v_outcome text;
+  v_reason text;
+  v_return_code text;
   v_pos_state text;
 begin
   select * into v_op from kiosk.operations where id = p_op for update;
@@ -331,10 +342,21 @@ begin
   end if;
 
   if p_decision ? 'checkout_outcome' then
-    update kiosk.checkouts
-       set outcome = p_decision ->> 'checkout_outcome',
-           outcome_reason = p_decision ->> 'checkout_reason'
-     where id = v_op.checkout_id;
+    -- Durable financial facts win over a POS reading: a known return keeps the checkout with
+    -- staff, and a refunded checkout is never "ready for pickup" again.
+    v_outcome := p_decision ->> 'checkout_outcome';
+    v_reason := p_decision ->> 'checkout_reason';
+    select return_code into v_return_code from kiosk.money_movements
+     where checkout_id = v_op.checkout_id and kind = 'return' limit 1;
+    if found and v_outcome <> 'needs_staff' then
+      v_outcome := 'needs_staff';
+      v_reason := 'Bank returned the debit (' || coalesce(v_return_code, 'no code') || '). The register status does not clear it.';
+    elsif v_outcome = 'ready_for_pickup' and exists (
+        select 1 from kiosk.bank_payments where checkout_id = v_op.checkout_id and refund_state <> 'none') then
+      v_outcome := 'closed';
+      v_reason := 'Refunded or refund in progress. Not for pickup.';
+    end if;
+    update kiosk.checkouts set outcome = v_outcome, outcome_reason = v_reason where id = v_op.checkout_id;
   end if;
 
   for v_next in select * from jsonb_array_elements(coalesce(p_decision -> 'next', '[]'::jsonb)) loop
@@ -486,6 +508,11 @@ declare
   v_ack text;
 begin
   select ack_state into v_ack from kiosk.register_acks where checkout_id = p_checkout;
+  if coalesce(trim(p_override_reason), '') = '' and (
+       exists (select 1 from kiosk.money_movements where checkout_id = p_checkout and kind in ('return', 'refund'))
+       or exists (select 1 from kiosk.bank_payments where checkout_id = p_checkout and refund_state <> 'none')) then
+    raise exception 'financial_exception_on_record';
+  end if;
   if v_ack <> 'applied' and coalesce(trim(p_override_reason), '') = '' then
     raise exception 'register_has_not_acknowledged_payment';
   end if;
@@ -495,6 +522,13 @@ begin
   perform kiosk.log(p_checkout, 'staff', 'goods_handed_over',
                     jsonb_build_object('staff', p_staff, 'override_reason', p_override_reason, 'register_ack', v_ack), p_now);
 end $$;
+
+create function kiosk.close_return_watch(p_capture_ref text, p_now timestamptz default now())
+returns void language sql
+security definer set search_path = kiosk, pg_temp as $$
+  update kiosk.bank_payments set return_watch_closed_at = p_now
+   where capture_ref = p_capture_ref and return_watch_closed_at is null;
+$$;
 
 -- ---------------------------------------------------------------------------------------------
 -- Reconciliation: one row per checkout, amounts and references side by side.

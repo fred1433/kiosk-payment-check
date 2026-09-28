@@ -39,12 +39,22 @@ export interface CovaSimOptions {
   landPaymentIn?: PosPaymentStatus;
   /** Honor a repeated PUT with the same GUID as the same order (assumption). */
   putIsIdempotentById?: boolean;
+  /** Simulate a payment-reference lookup Cova does not document (default false). */
+  exposesPaymentReferences?: boolean;
+  /** Declared capability: re-sending under the same GUID is safe (default true, to confirm). */
+  declareIdempotentSubmit?: boolean;
   /** Make cancellation unavailable, e.g. inventory already allocated (Dutchie documents this case). */
   refuseCancel?: string;
 }
 
 export class CovaSimulator implements PosAdapter {
   readonly name = "cova-contract-simulator";
+  get capabilities() {
+    return {
+      paymentReferenceLookup: this.opts.exposesPaymentReferences === true,
+      idempotentSubmitById: this.opts.declareIdempotentSubmit !== false,
+    };
+  }
   readonly orders = new Map<string, SimOrder>();
   readonly faults: Partial<Record<"submit" | "status" | "pay" | "cancel", Fault[]>> = {};
   readonly calls = { submit: 0, status: 0, pay: 0, cancel: 0 };
@@ -125,6 +135,9 @@ export class CovaSimulator implements PosAdapter {
           ? o.saleTotalCents
           : null,
         message: o.message,
+        payments: this.opts.exposesPaymentReferences
+          ? o.paymentsApplied.map((p) => ({ ref: p.paymentRef, amountCents: p.amountCents }))
+          : undefined,
       },
     });
   }

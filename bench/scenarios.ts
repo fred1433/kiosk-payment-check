@@ -6,7 +6,7 @@
 // Boundary: these tests verify this module against the stated simulated contracts. They do not
 // certify provider behavior or prevent independent cashier actions.
 
-import { CART, FEE_CENTS, makeWorld, OTHER_STORE, QUOTE_CENTS, SHOPPER, type World } from "./world.ts";
+import { CART, FEE_CENTS, makeWorld, OTHER_STORE, QUOTE_CENTS, SHOPPER, STORE, type World } from "./world.ts";
 import {
   events,
   pollUnsettledCaptures,
@@ -156,6 +156,19 @@ function seq(
   return (opts: RunOpts) => body(opts).then((r) => ({ family, id, title, expectation, ...r }));
 }
 
+/** Runs the worker until the given operation kind has finished, then stops. */
+async function runUntilDone(w: World, kind: string) {
+  for (let i = 0; i < 100; i++) {
+    const [row] = await w.sql.query<{ n: number }>(
+      `select count(*)::int as n from kiosk.operations where kind = $1 and state = 'done'`,
+      [kind],
+    );
+    if (row.n > 0) return;
+    if (!(await runOnce(w.worker()))) w.clock.advance(15);
+  }
+  throw new Error(`${kind} never finished`);
+}
+
 const CHARGE = QUOTE_CENTS + FEE_CENTS;
 
 // ------------------------------------------------------------------------------------------------
@@ -211,6 +224,38 @@ export const FAMILIES: Family[] = [
               o.pgUrl
                 ? "Ran on a Postgres server with a 10-connection pool."
                 : "PGlite has one connection; this sequence is only meaningful on a server.",
+            ],
+          };
+        },
+      ),
+      seq(
+        "double-submit",
+        "1c",
+        "Same kiosk request id reused with a different cart at the same price, then with another saved bank reference",
+        "Both refused: the id is bound to a fingerprint of the whole intent",
+        async (o) => {
+          const w = await makeWorld(o);
+          const a = await w.checkout();
+          const cart2 = [...CART.slice(0, 2), {
+            name: "Vape cartridge, 0.5 g",
+            sku: "VAP-05",
+            qty: 1,
+            lineCents: 1800,
+          }];
+          const b = await w.checkout({ cart: cart2 });
+          const [ref2] = await w.sql.query<{ id: string }>(
+            `insert into kiosk.saved_bank_refs (shopper_id, store_id, provider_consent_ref) values ($1, $2, 'consent_shopper_a_2') returning id`,
+            [SHOPPER, STORE],
+          );
+          const c = await w.checkout({ savedRefId: ref2.id });
+          const m = await measure(w, a.ok ? a.checkoutId : null, 3);
+          await w.close();
+          return {
+            module: { ...m, outcome: [b, c].map((x) => (x.ok ? "joined" : x.error)).join(", ") },
+            pass: a.ok && !b.ok && !c.ok,
+            resolved: true,
+            notes: [
+              "Before this check, a different cart at the same total silently joined the first checkout.",
             ],
           };
         },
@@ -293,7 +338,8 @@ export const FAMILIES: Family[] = [
   {
     id: "webhooks",
     title: "Duplicate, missing, reordered and invalid webhooks",
-    demonstrates: "Invalid input rejected; repeats do not repeat effects; a lost notice is found by reading the bank, for 60 days after settlement.",
+    demonstrates:
+      "Invalid input rejected; repeats do not repeat effects; a lost notice is found by reading the bank, for 60 days after settlement.",
     sequences: () => [
       seq("webhooks", "3a", "Every webhook delivered twice", "Settlement recorded once", async (o) => {
         const w = await makeWorld(o);
@@ -441,6 +487,76 @@ export const FAMILIES: Family[] = [
           };
         },
       ),
+      seq(
+        "webhooks",
+        "3f",
+        "Settlement notice lost, return notice delivered",
+        "The settlement is read from the bank's history, not invented; the store is short $97.50, not $195",
+        async (o) => {
+          const w = await makeWorld(o);
+          const r = await w.checkout();
+          const id = r.ok ? r.checkoutId : "";
+          await w.run();
+          await recordHandoff(w.sql, w.clock, id, "budtender-3", null);
+          const ref = [...w.bank.payments.keys()][0];
+          w.bank.settle(ref, "2026-09-29");
+          w.bank.returnDebit(ref, "R01", "2026-10-01");
+          await w.deliver({ drop: (i) => i === 0 });
+          const before = (await reconciliation(w.sql, id)).short_cents;
+          await pollUnsettledCaptures(w.sql, w.clock, w.bank);
+          const m = await measure(w, id, 1);
+          await w.close();
+          return {
+            module: m,
+            pass: before === 2 * CHARGE && m.shortCents === CHARGE && m.recordedNetCents === m.bankNetCents,
+            resolved: false,
+            notes: [
+              `Before reconciliation the ledger showed the store short ${
+                (before / 100).toFixed(2)
+              }; after reading the bank, ${(CHARGE / 100).toFixed(2)}.`,
+            ],
+          };
+        },
+      ),
+      seq(
+        "webhooks",
+        "3g",
+        "R10 dated day 59, notice lost, every bank read failing from day 59 to day 70",
+        "Found on day 71: the watch closes only after a successful read past the window",
+        async (o) => {
+          const w = await makeWorld(o);
+          const r = await w.checkout();
+          const id = r.ok ? r.checkoutId : "";
+          await w.run();
+          await recordHandoff(w.sql, w.clock, id, "budtender-3", null);
+          const ref = [...w.bank.payments.keys()][0];
+          w.bank.settle(ref, "2026-09-29");
+          await w.deliver();
+          for (const d of [21, 20, 18]) {
+            w.clock.advanceDays(d); // reads on days 20, 40 and 58 after settlement
+            await pollUnsettledCaptures(w.sql, w.clock, w.bank);
+          }
+          w.bank.returnDebit(ref, "R10", "2026-11-27"); // day 59
+          await w.deliver({ drop: () => true });
+          w.bank.faults.get = ["server_error", "server_error", "server_error", "server_error"];
+          for (const d of [1, 4, 3, 4]) { // days 59, 63, 66, 70: every read fails
+            w.clock.advanceDays(d);
+            await pollUnsettledCaptures(w.sql, w.clock, w.bank);
+          }
+          w.clock.advanceDays(1); // day 71
+          const found = await pollUnsettledCaptures(w.sql, w.clock, w.bank);
+          const m = await measure(w, id, 1);
+          await w.close();
+          return {
+            module: m,
+            pass: found === 1 && m.shortCents === CHARGE && m.outcome === "needs_staff",
+            resolved: false,
+            notes: [
+              "An age cutoff would have dropped this capture after day 60. The watch closes only after a successful read at least 65 days after settlement (60-day window plus a 5-day reporting margin).",
+            ],
+          };
+        },
+      ),
     ],
   },
   {
@@ -491,7 +607,7 @@ export const FAMILIES: Family[] = [
           await w.close();
           return {
             module: m,
-            naive: await naive((_b, pos) => (pos.faults.submit = ["lose_response"])),
+            naive: await naive((_b, pos) => (pos.faults.submit = ["drop_request"])),
             pass: m.orders === 1 && m.debits === 1 && m.outcome === "ready_for_pickup",
             resolved: true,
             notes: [
@@ -546,6 +662,52 @@ export const FAMILIES: Family[] = [
           };
         },
       ),
+      seq(
+        "order-rejected-or-unknown",
+        "4e",
+        "Order submission reaches the register, response lost",
+        "Status read under our GUID finds it; 1 order",
+        async (o) => {
+          const w = await makeWorld(o);
+          w.pos.faults.submit = ["lose_response"];
+          const r = await w.checkout();
+          await w.run();
+          const m = await measure(w, r.ok ? r.checkoutId : null, 1);
+          await w.close();
+          return {
+            module: m,
+            naive: await naive((_b, pos) => (pos.faults.submit = ["lose_response"])),
+            pass: m.orders === 1 && m.outcome === "ready_for_pickup",
+            resolved: true,
+            notes: [],
+          };
+        },
+      ),
+      seq(
+        "order-rejected-or-unknown",
+        "4f",
+        "Same fault as 4b, on a register not confirmed to deduplicate by order id",
+        "Not re-sent; a person checks the register; nothing captured",
+        async (o) => {
+          const w = await makeWorld({
+            ...o,
+            pos: { declareIdempotentSubmit: false, putIsIdempotentById: false },
+          });
+          w.pos.faults.submit = ["drop_request"];
+          const r = await w.checkout();
+          await w.run();
+          const m = await measure(w, r.ok ? r.checkoutId : null, 1);
+          await w.close();
+          return {
+            module: m,
+            pass: m.orders === 0 && m.debits === 0 && m.outcome === "needs_staff",
+            resolved: false,
+            notes: [
+              "The same capability gate the bank has: without confirmed deduplication, a timed-out submission is not replayed.",
+            ],
+          };
+        },
+      ),
     ],
   },
   {
@@ -582,8 +744,8 @@ export const FAMILIES: Family[] = [
       seq(
         "register-not-acknowledged",
         "5b",
-        "Payment record accepted, response lost",
-        "Status read first; payment applied once",
+        "Payment record reached the register, response lost",
+        "Applied once; a paid status alone does not prove it is ours",
         async (o) => {
           const w = await makeWorld(o);
           w.pos.faults.pay = ["lose_response"];
@@ -593,9 +755,12 @@ export const FAMILIES: Family[] = [
           await w.close();
           return {
             module: m,
-            pass: m.paymentsAppliedAtRegister === 1 && m.outcome === "ready_for_pickup",
-            resolved: true,
-            notes: [],
+            pass: m.paymentsAppliedAtRegister === 1 && m.outcome === "needs_staff" &&
+              !!m.reason?.includes("does not establish"),
+            resolved: false,
+            notes: [
+              "Cova's documented status says the order is paid, not by whom. Without a payment-reference lookup the module cannot tell our record from another payment, so it asks a person (see 5e for the same fault with a lookup).",
+            ],
           };
         },
       ),
@@ -655,6 +820,87 @@ export const FAMILIES: Family[] = [
             resolved: false,
             notes: [
               "Our payment record is refused because the order is already paid; the register's status alone would say paid. The module reads the refusal as a warning, not as success.",
+            ],
+          };
+        },
+      ),
+      seq(
+        "register-not-acknowledged",
+        "5e",
+        "Same fault as 5b, with a register that lists payments with their references",
+        "Our reference and amount found: paid",
+        async (o) => {
+          const w = await makeWorld({ ...o, pos: { exposesPaymentReferences: true } });
+          w.pos.faults.pay = ["lose_response"];
+          const r = await w.checkout();
+          await w.run();
+          const m = await measure(w, r.ok ? r.checkoutId : null, 1);
+          await w.close();
+          return {
+            module: m,
+            pass: m.paymentsAppliedAtRegister === 1 && m.outcome === "ready_for_pickup",
+            resolved: true,
+            notes: [
+              "Cova's documented status does not carry the payment reference. Whether another endpoint does is a discovery question.",
+            ],
+          };
+        },
+      ),
+      seq(
+        "register-not-acknowledged",
+        "5f",
+        "Our payment record never arrives, then the cashier records cash",
+        "Not called paid: possible double collection",
+        async (o) => {
+          const w = await makeWorld(o);
+          w.pos.faults.pay = ["drop_request"];
+          const r = await w.checkout();
+          await w.run({
+            afterCall: (op) => {
+              if (op.kind === "pos_apply_payment") {
+                w.pos.cashierTakesCashAndRecords([...w.pos.orders.keys()][0]);
+              }
+            },
+          });
+          const m = await measure(w, r.ok ? r.checkoutId : null, 1);
+          await w.close();
+          return {
+            module: m,
+            naive: await naive(() => {}, {
+              during: (_b, pos) => pos.cashierTakesCashAndRecords([...pos.orders.keys()][0]),
+            }),
+            pass: m.counterPayments === 1 && m.debits === 1 && m.outcome === "needs_staff",
+            resolved: false,
+            notes: ["Before this fix, a paid status after a lost record was read as our payment."],
+          };
+        },
+      ),
+      seq(
+        "register-not-acknowledged",
+        "5g",
+        "Our payment record succeeds, the worker dies, the replay is refused as already paid",
+        "Escalated without claiming who paid",
+        async (o) => {
+          const w = await makeWorld(o);
+          let crashed = false;
+          const r = await w.checkout();
+          await w.run({
+            afterCall: (op, call) => {
+              if (op.kind === "pos_apply_payment" && call.kind === "ok" && !crashed) {
+                crashed = true;
+                throw new WorkerCrash("died after the register accepted our record");
+              }
+            },
+          });
+          const m = await measure(w, r.ok ? r.checkoutId : null, 1);
+          await w.close();
+          return {
+            module: m,
+            pass: m.counterPayments === 0 && m.outcome === "needs_staff" &&
+              !!m.reason?.includes("does not establish"),
+            resolved: false,
+            notes: [
+              "Only our payment is at the register, but the refusal alone cannot prove it; with a payment lookup this would be recovered.",
             ],
           };
         },
@@ -923,6 +1169,59 @@ export const FAMILIES: Family[] = [
                 early.join(", ")
               } (the HTTP handler answers 503 so the provider retries); the reconciler also reads accepted refunds.`,
             ],
+          };
+        },
+      ),
+      seq(
+        "refund-vs-return",
+        "7f",
+        "Register work delayed by an outage; the debit settles and comes back R01; then the register shows paid",
+        "Stays with staff; ordinary handoff refused",
+        async (o) => {
+          const w = await makeWorld(o);
+          const r = await w.checkout();
+          const id = r.ok ? r.checkoutId : "";
+          await runUntilDone(w, "bank_capture");
+          const ref = [...w.bank.payments.keys()][0];
+          w.bank.settle(ref, "2026-09-29");
+          w.bank.returnDebit(ref, "R01", "2026-10-01");
+          await w.deliver();
+          await w.run();
+          const handoff = await recordHandoff(w.sql, w.clock, id, "budtender-3", null);
+          const m = await measure(w, id, 1);
+          await w.close();
+          return {
+            module: m,
+            pass: w.pos.registerShowsPaid() && m.outcome === "needs_staff" && !handoff.ok,
+            resolved: false,
+            notes: [
+              `Ordinary handoff: ${
+                handoff.ok ? "accepted" : handoff.error
+              }. A later register reading no longer overwrites a known return.`,
+            ],
+          };
+        },
+      ),
+      seq(
+        "refund-vs-return",
+        "7g",
+        "Order refunded before pickup",
+        "Closed, not ready for pickup; ordinary handoff refused",
+        async (o) => {
+          const w = await makeWorld(o);
+          const r = await w.checkout();
+          const id = r.ok ? r.checkoutId : "";
+          await w.run();
+          await requestRefund(w.sql, w.clock, id, CHARGE, "shopper_cancelled", "manager-1");
+          await w.run();
+          const handoff = await recordHandoff(w.sql, w.clock, id, "budtender-3", null);
+          const m = await measure(w, id, 1);
+          await w.close();
+          return {
+            module: m,
+            pass: m.outcome === "closed" && !handoff.ok,
+            resolved: true,
+            notes: [`Ordinary handoff: ${handoff.ok ? "accepted" : handoff.error}.`],
           };
         },
       ),

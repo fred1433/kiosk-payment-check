@@ -4,7 +4,7 @@ import { type Sql, sqlErrorCode } from "./db.ts";
 import type { Clock } from "./clock.ts";
 import type { BankAdapter, CartLine } from "./adapters/types.ts";
 import { verifyWebhook } from "./webhook_signature.ts";
-import { isLateNotice, returnDeadlines } from "./ach.ts";
+import { addCalendarDays, isLateNotice, returnDeadlines } from "./ach.ts";
 
 export interface StartCheckout {
   storeId: string;
@@ -138,12 +138,17 @@ async function flagLateReturn(sql: Sql, clock: Clock, captureRef: string, code: 
 
 /** Days after settlement during which a consumer debit can still come back (R05, R07, R10, R11). */
 export const RETURN_WATCH_DAYS = 60;
+/** Extra days allowed for the provider to report a return dated inside the window. */
+export const REPORTING_MARGIN_DAYS = 5;
 
 /**
- * Reconciliation for missing webhooks. Reads the bank for:
- *   every accepted capture with no settlement or return recorded, and every settled capture
- *   still inside the consumer return window (a lost R10 notice would otherwise stay invisible);
- *   every accepted refund with no settlement recorded.
+ * Reconciliation for missing webhooks. It tracks completeness and successful observation, not age:
+ *   - a capture with no settlement recorded is read, even when a return is already recorded
+ *     (the provider's history carries the settlement; nothing is fabricated from the return);
+ *   - a settled capture keeps being read until the bank has been read SUCCESSFULLY after the
+ *     return window plus a reporting margin; only then is its watch closed. A reconciler outage
+ *     around day 60 therefore delays the closing read, it does not skip it;
+ *   - an accepted refund with no settlement recorded is read.
  * Same unique keys as webhooks, so a late webhook after a poll inserts nothing. Returns the
  * number of new facts recorded.
  */
@@ -152,10 +157,9 @@ export async function pollUnsettledCaptures(sql: Sql, clock: Clock, bank: BankAd
   const captures = await sql.query<{ capture_ref: string }>(
     `select b.capture_ref from kiosk.bank_payments b
       where b.capture_state = 'accepted'
-        and not exists (select 1 from kiosk.money_movements m where m.provider_ref = b.capture_ref and m.kind = 'return')
-        and not exists (select 1 from kiosk.money_movements m where m.provider_ref = b.capture_ref and m.kind = 'settlement'
-                         and m.effective_date + $1::int < $2::text::date)`,
-    [RETURN_WATCH_DAYS, today],
+        and (not exists (select 1 from kiosk.money_movements m where m.provider_ref = b.capture_ref and m.kind = 'settlement')
+             or (b.return_watch_closed_at is null
+                 and not exists (select 1 from kiosk.money_movements m where m.provider_ref = b.capture_ref and m.kind = 'return')))`,
   );
   let recorded = 0;
   const now = clock.now().toISOString();
@@ -169,17 +173,21 @@ export async function pollUnsettledCaptures(sql: Sql, clock: Clock, bank: BankAd
   };
   for (const { capture_ref } of captures) {
     const r = await bank.getPayment(capture_ref);
-    if (r.kind !== "ok") continue;
+    if (r.kind !== "ok") continue; // not observed: stays on the list
     const v = r.value;
-    if (v.status === "settled" || (v.status === "returned" && v.settledOn)) {
-      await rec("payment.settled", capture_ref, v.amountCents, null, v.settledOn!);
-    }
+    const settledOn = v.status === "pending" ? undefined : v.settledOn;
+    if (settledOn) await rec("payment.settled", capture_ref, v.amountCents, null, settledOn);
     if (v.status === "returned") {
       if (
         (await rec("payment.returned", capture_ref, v.amountCents, v.returnCode, v.returnedOn)) === "recorded"
       ) {
         await flagLateReturn(sql, clock, capture_ref, v.returnCode, v.returnedOn);
       }
+    } else if (
+      v.status === "settled" &&
+      today > addCalendarDays(v.settledOn, RETURN_WATCH_DAYS + REPORTING_MARGIN_DAYS)
+    ) {
+      await sql.query(`select kiosk.close_return_watch($1, $2)`, [capture_ref, now]);
     }
   }
   const refunds = await sql.query<{ refund_ref: string }>(

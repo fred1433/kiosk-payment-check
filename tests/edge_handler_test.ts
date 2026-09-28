@@ -113,3 +113,35 @@ Deno.test("edge handler: a webhook for a reference we have not written yet is re
   await b.body?.cancel();
   await w.close();
 });
+
+Deno.test("edge handler: the scheduled tick also reconciles a settlement whose notice was lost", async () => {
+  const w = await makeWorld();
+  const h = makeHandler({
+    sql: w.sql,
+    clock: w.clock,
+    bank: w.bank,
+    pos: w.pos,
+    webhookSecret: WEBHOOK_SECRET,
+    signatureHeader: "x-bank-signature",
+    tickSecret: "tick",
+    feeCents: FEE_CENTS,
+    authenticateShopper: () => Promise.resolve(null),
+  });
+  const r = await w.checkout();
+  await w.run();
+  w.bank.settleAllPending("2026-09-29");
+  w.bank.takeEvents(); // notices lost
+  const t = await h(
+    new Request("http://localhost/kiosk-checkout/worker/tick", {
+      method: "POST",
+      headers: { authorization: "Bearer tick" },
+    }),
+  );
+  assertEquals((await t.json()).reconciled, 1);
+  const [m] = await w.sql.query<{ n: number }>(
+    `select count(*)::int as n from kiosk.money_movements where checkout_id = $1`,
+    [r.ok ? r.checkoutId : ""],
+  );
+  assertEquals(m.n, 1);
+  await w.close();
+});

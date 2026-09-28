@@ -54,9 +54,16 @@ export interface Snapshot {
   orderState: string;
   saleTotalCents: number | null;
   ackState: string;
+  /** From the POS adapter's declared capabilities, set by the worker. */
+  posIdempotentSubmit: boolean;
 }
 
-export type CheckoutOutcome = "ready_for_pickup" | "no_charge" | "needs_new_consent" | "needs_staff";
+export type CheckoutOutcome =
+  | "ready_for_pickup"
+  | "no_charge"
+  | "needs_new_consent"
+  | "needs_staff"
+  | "closed";
 
 export interface Decision {
   op_state: "done" | "retry" | "needs_investigation";
@@ -249,7 +256,12 @@ export function decide(op: OperationRow, call: Call<unknown>, s: Snapshot, now: 
           op_state: "done",
           outcome: "accepted_202",
           ack: { ack_state: "sent", amount_cents: op.input.amount_cents },
-          next: [{ kind: "pos_check_payment", seq: op.seq, delay_seconds: 2 }],
+          next: [{
+            kind: "pos_check_payment",
+            seq: op.seq,
+            delay_seconds: 2,
+            input: { apply_result: "accepted" },
+          }],
         };
       }
       if (call.kind === "unknown") {
@@ -257,7 +269,12 @@ export function decide(op: OperationRow, call: Call<unknown>, s: Snapshot, now: 
           op_state: "done",
           outcome: "unknown",
           ack: { ack_state: "unknown" },
-          next: [{ kind: "pos_check_payment", seq: op.seq, delay_seconds: 5 }],
+          next: [{
+            kind: "pos_check_payment",
+            seq: op.seq,
+            delay_seconds: 5,
+            input: { apply_result: "unknown" },
+          }],
         };
       }
       // Rejected: read the register before telling staff anything, the order may be gone.
@@ -266,7 +283,11 @@ export function decide(op: OperationRow, call: Call<unknown>, s: Snapshot, now: 
         outcome: "rejected",
         error: call.reason,
         ack: { ack_state: "cannot_be_applied", raw_status: call.reason },
-        next: [{ kind: "pos_check_payment", seq: op.seq, input: { after_rejection: call.reason } }],
+        next: [{
+          kind: "pos_check_payment",
+          seq: op.seq,
+          input: { apply_result: "rejected", after_rejection: call.reason },
+        }],
       };
     }
 
@@ -320,6 +341,8 @@ export function decide(op: OperationRow, call: Call<unknown>, s: Snapshot, now: 
         return {
           op_state: "done",
           outcome: "accepted",
+          checkout_outcome: "closed",
+          checkout_reason: `Refunded ${usd(amount)} (${v.refundRef}). Not for pickup.`,
           bank: { refund_state: "accepted", refund_ref: v.refundRef, refund_amount_cents: amount },
         };
       }
@@ -397,7 +420,19 @@ function decideCheckOrder(op: OperationRow, call: Call<unknown>, s: Snapshot, no
           { pos: raw },
         );
       }
-    // falls through: the submit outcome was unknown, so resubmit with the SAME GUID
+      // The submit outcome was unknown. Re-sending under the SAME GUID is only safe if the POS is
+      // known to deduplicate by id; otherwise stop and ask a person.
+      if (!s.posIdempotentSubmit) {
+        return {
+          op_state: "needs_investigation",
+          outcome: "not_resubmitted",
+          pos: raw,
+          checkout_outcome: "needs_staff",
+          checkout_reason:
+            `The register has no record of order ${s.posOrderId} after a submission that timed out, and re-sending under the same id is not confirmed safe for this POS. Nothing was captured. Check the register before retrying.`,
+        };
+      }
+    // falls through
     case "TransientProcessingFailure":
       if (op.seq < LIMITS.maxResubmits) {
         return {
@@ -450,7 +485,7 @@ function decideCheckPayment(op: OperationRow, call: Call<unknown>, s: Snapshot, 
   if (call.kind !== "ok") {
     return retryOrEscalate(
       op,
-      `Paid by bank (${s.captureRef}). The register status could not be read. Do not collect again at the counter.`,
+      `Bank accepted the debit (${s.captureRef}). The register status could not be read. Do not collect again at the counter.`,
     );
   }
   const st = call.value as PosStatus;
@@ -461,40 +496,18 @@ function decideCheckPayment(op: OperationRow, call: Call<unknown>, s: Snapshot, 
       pos: { order_state: "cancelled", raw_status: st.orderStatus },
       ack: { ack_state: "cannot_be_applied", raw_status: st.paymentStatus },
       checkout_outcome: "needs_staff",
-      checkout_reason: `Paid by bank (${
+      checkout_reason: `Bank accepted the debit (${
         usd(s.captureAmountCents)
       }, ${s.captureRef}) but the order was cancelled at the register. A refund decision is needed. Nothing was refunded automatically.`,
     };
   }
   switch (st.paymentStatus) {
     case "PaymentApplied":
-      if (op.input.after_rejection) {
-        // Our payment record was refused, yet the register shows the order paid: someone else
-        // recorded a payment (for example cash at the counter) while the bank also took the money.
-        return {
-          op_state: "needs_investigation",
-          outcome: "register_paid_by_someone_else",
-          ack: {
-            ack_state: "cannot_be_applied",
-            raw_status: `PaymentApplied, not ours (${op.input.after_rejection})`,
-          },
-          checkout_outcome: "needs_staff",
-          checkout_reason: `The register shows a payment we did not record, and the bank also took ${
-            usd(s.captureAmountCents)
-          } (${s.captureRef}). Possible double collection: check how the register was paid before handing over or refunding.`,
-        };
-      }
-      return {
-        op_state: "done",
-        outcome: "applied",
-        ack: { ack_state: "applied", raw_status: st.paymentStatus },
-        checkout_outcome: "ready_for_pickup",
-        checkout_reason: "Paid. The register shows the payment.",
-      };
+      return decidePaymentIdentity(op, st, s);
     case "PaymentSubmittedForProcessing":
       return retryOrEscalate(
         op,
-        `Paid by bank (${s.captureRef}). The register is still processing the payment record. Do not collect again at the counter.`,
+        `Bank accepted the debit (${s.captureRef}). The register is still processing the payment record. Do not collect again at the counter.`,
         { ack: { raw_status: st.paymentStatus } },
       );
     case "NotReadyForPayment":
@@ -519,13 +532,64 @@ function decideCheckPayment(op: OperationRow, call: Call<unknown>, s: Snapshot, 
         outcome: "not_acknowledged",
         ack: { ack_state: "cannot_be_applied", raw_status: st.paymentStatus },
         checkout_outcome: "needs_staff",
-        checkout_reason: `Paid by bank (${
+        checkout_reason: `Bank accepted the debit (${
           usd(s.captureAmountCents)
         }, ${s.captureRef}). The register does not show the payment (status: ${
           op.input.after_rejection ?? st.paymentStatus
         }${st.message ? `: ${st.message}` : ""}). Do not collect again at the counter.`,
       };
   }
+}
+
+/**
+ * "The order has a payment" is not "the register acknowledged OUR bank payment".
+ *   - If the register lists its payments (a capability to confirm with Cova: the documented status
+ *     response does not carry the payment reference), match our reference and amount.
+ *   - Otherwise, only a payment record the register ACCEPTED from us establishes it is ours
+ *     (Cova documents that a paid order cannot be modified, so no second payment can follow).
+ *   - After an unknown or refused record, a paid status alone is ambiguous: say so.
+ */
+function decidePaymentIdentity(op: OperationRow, st: PosStatus, s: Snapshot): Decision {
+  const ambiguous = (outcome: string, reason: string): Decision => ({
+    op_state: "needs_investigation",
+    outcome,
+    ack: { ack_state: "unknown", raw_status: `PaymentApplied (${op.input.apply_result ?? "?"})` },
+    checkout_outcome: "needs_staff",
+    checkout_reason: reason,
+  });
+  const ours: Decision = {
+    op_state: "done",
+    outcome: "applied",
+    ack: { ack_state: "applied", raw_status: st.paymentStatus },
+    checkout_outcome: "ready_for_pickup",
+    checkout_reason: "Paid. The register shows our bank payment.",
+  };
+  if (st.payments) {
+    const mine = st.payments.filter((p) => p.ref === s.captureRef);
+    const others = st.payments.filter((p) => p.ref !== s.captureRef);
+    if (others.length) {
+      return ambiguous(
+        "register_has_another_payment",
+        `The register shows a payment we did not send (${
+          others.map((p) => `${p.ref}, ${usd(p.amountCents)}`).join("; ")
+        }), and the bank accepted ${
+          usd(s.captureAmountCents)
+        } (${s.captureRef}). Possible double collection: check before handing over or refunding.`,
+      );
+    }
+    if (mine.length === 1 && mine[0].amountCents === s.saleTotalCents) return ours;
+    return ambiguous(
+      "payment_identity_mismatch",
+      `The register's payment record does not match our bank payment ${s.captureRef}. Check before handing over.`,
+    );
+  }
+  if (op.input.apply_result === "accepted") return ours;
+  return ambiguous(
+    "payment_identity_unknown",
+    `The register shows a payment, but this response does not establish whether it is our bank payment (${s.captureRef}, ${
+      usd(s.captureAmountCents)
+    } accepted by the bank). Check the payment record before handing over or refunding.`,
+  );
 }
 
 /** Operations that move money must not be repeated when the provider cannot deduplicate. */

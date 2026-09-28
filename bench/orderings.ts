@@ -103,6 +103,10 @@ async function orderFirst(f: Fault): Promise<Cell> {
     return truth(bank, pos, "Order rejected before any debit. Nothing charged.");
   }
   const total = st.value.saleTotalCents! + FEE_CENTS;
+  // Same amount guard as the module: never debit more than the shopper approved.
+  if (total > QUOTE_CENTS + FEE_CENTS) {
+    return truth(bank, pos, "Asks the shopper to approve the new total; unpaid order left open.");
+  }
   const d = await bank.debit({ operationKey: "k1", consentRef: "consent_shopper_a", amountCents: total });
   if (d.kind !== "ok") {
     return truth(bank, pos, "Debit declined; unpaid order left open, holding inventory until cancelled.");
@@ -114,8 +118,6 @@ async function orderFirst(f: Fault): Promise<Cell> {
   });
   const note = !pos.registerShowsPaid()
     ? "Reports completed; the register shows the order unpaid."
-    : total > QUOTE_CENTS + FEE_CENTS
-    ? "Completed, but the shopper was debited more than the kiosk showed."
     : "Completed.";
   return truth(bank, pos, note);
 }
@@ -137,7 +139,7 @@ async function preauthConfirmCapture(f: Fault): Promise<Cell> {
 export async function runOrderings() {
   const strategies = [
     { id: "A", title: "Debit, then create the order", run: debitFirst },
-    { id: "B", title: "Create and confirm the order, then debit", run: orderFirst },
+    { id: "B", title: "Create and confirm the order, then debit (same amount guard)", run: orderFirst },
     {
       id: "C",
       title: "Preauthorize, confirm order and total, then capture (this module)",

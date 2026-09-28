@@ -10,7 +10,7 @@ the real repository has been read.
 |---|---|---|
 | Schema and SQL functions | `supabase/migrations/20260928120000_kiosk_checkout.sql` | Your migrations folder, own `kiosk` schema |
 | Workflow as a pure function | `src/workflow.ts` | Domain package |
-| Durable worker | `src/worker.ts` | A scheduled job calling `/worker/tick` |
+| Durable worker and reconciler | `src/worker.ts`, `src/service.ts` | A scheduled job calling `/worker/tick`: it runs pending operations, then reads the bank for lost notices |
 | Webhook verification and ingestion | `src/webhook_signature.ts`, `src/service.ts` | Edge Function route |
 | HTTP handler | `src/http/handler.ts`, `supabase/functions/kiosk-checkout/index.ts` | Your Edge Function conventions |
 | POS port and Cova-shaped simulator | `src/adapters/types.ts`, `src/adapters/cova_sim.ts` | Your POS adapter framework |
@@ -30,6 +30,18 @@ the real repository has been read.
 - Cart and total: the kiosk quote versus the register's sale total, and where your adapters
   already compute tax.
 
+## Prerequisites the code states instead of assuming
+
+| Declared capability | Where | If it is false |
+|---|---|---|
+| Bank returns the original result for a repeated idempotency key | `BankAdapter.capabilities.idempotencyKeys` | Money-moving operations are not replayed; a person checks |
+| POS never creates a second order for the same order id | `PosAdapter.capabilities.idempotentSubmitById` | A timed-out submission is not replayed; status first, then a person |
+| POS lists its payments with their references | `PosAdapter.capabilities.paymentReferenceLookup` | A paid status after a lost or refused payment record is reported as ambiguous, never as paid |
+
+Also enforced in SQL: a kiosk request id is bound to a fingerprint of the whole intent (store,
+shopper, saved reference, cart, totals); a known return or refund is never cleared by a later
+register reading; ordinary handoff is refused after a known return or refund.
+
 ## Order of operations, compared
 
 Run by `bench/orderings.ts` against the same simulated faults (results on the page).
@@ -37,7 +49,7 @@ Run by `bench/orderings.ts` against the same simulated faults (results on the pa
 | Order | Helps with | Introduces |
 |---|---|---|
 | A. Debit, then create the order | Starts payment early | Money taken with no order when the register rejects it or stays unknown; a refund, and a possible later return on top |
-| B. Confirm the order, then debit | Never charges for an order that does not exist | An unpaid order holding inventory when the debit fails; cancellation can be refused (Dutchie: allocated inventory) |
+| B. Confirm the order, then debit (with the same amount guard) | Never charges for an order that does not exist | An unpaid order holding inventory when the debit fails or the total rises; cancellation can be refused (Dutchie: allocated inventory) |
 | C. Preauthorize, confirm order and total, then capture (chosen) | Charges the register's final total, never more than approved; no money moves until the order exists | Needs a provider with preauthorization and capture; leaves a window where money moved but the register does not yet show it paid. That window is surfaced to staff, never marked complete |
 
 C is chosen under two assumptions to confirm: the provider supports preauthorization and capture of

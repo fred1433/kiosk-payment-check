@@ -46,7 +46,8 @@ supabase/migrations/   schema, SQL functions (claim, finish, bank events, staff 
 supabase/functions/    Edge Function entry (serves the simulators only, refuses to start otherwise)
 src/workflow.ts        every decision as one pure function
 src/worker.ts          claim -> call outside any transaction -> record with the claim token
-src/service.ts         checkout, webhooks, reconciler reading the bank (captures for 60 days, refunds), refunds, handoff
+src/service.ts         checkout, webhooks, reconciler reading the bank (missing settlements, returns until a
+                       successful read 65 days after settlement, refunds), refunds, handoff
 src/adapters/          ports, Cova-shaped POS simulator, bank simulator
 src/naive.ts           the naive baseline
 bench/                 the failure families, the order-of-operations comparison, the page's timeline

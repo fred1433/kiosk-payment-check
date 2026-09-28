@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-28T14:19:04.152Z",
+  "generated_at": "2026-09-28T14:56:49.187Z",
   "database": "pglite (Postgres 17.5 in WebAssembly)",
   "runtime": "Deno 2.9.7",
   "families": [
@@ -27,7 +27,7 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "reason": "Paid. The register shows our bank payment.",
             "openInvestigations": 0
           },
           "naive": {
@@ -67,13 +67,41 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "reason": "Paid. The register shows our bank payment.",
             "openInvestigations": 0
           },
           "pass": true,
           "resolved": true,
           "notes": [
             "PGlite has one connection; this sequence is only meaningful on a server."
+          ]
+        },
+        {
+          "family": "double-submit",
+          "id": "1c",
+          "title": "Same kiosk request id reused with a different cart at the same price, then with another saved bank reference",
+          "expectation": "Both refused: the id is bound to a fingerprint of the whole intent",
+          "module": {
+            "submissions": 3,
+            "debits": 0,
+            "orders": 0,
+            "registerPaid": "no",
+            "paymentsAppliedAtRegister": 0,
+            "movements": [],
+            "bankNetCents": 0,
+            "recordedNetCents": 0,
+            "exposureCents": 0,
+            "unsettledCents": 0,
+            "shortCents": 0,
+            "counterPayments": 0,
+            "outcome": "kiosk_request_id_reused_with_different_checkout, kiosk_request_id_reused_with_different_checkout",
+            "reason": null,
+            "openInvestigations": 0
+          },
+          "pass": true,
+          "resolved": true,
+          "notes": [
+            "Before this check, a different cart at the same total silently joined the first checkout."
           ]
         }
       ]
@@ -102,7 +130,7 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "reason": "Paid. The register shows our bank payment.",
             "openInvestigations": 0
           },
           "naive": {
@@ -142,7 +170,7 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "reason": "Paid. The register shows our bank payment.",
             "openInvestigations": 0
           },
           "pass": true,
@@ -212,7 +240,7 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "reason": "Paid. The register shows our bank payment.",
             "openInvestigations": 0
           },
           "naive": {
@@ -310,7 +338,7 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "reason": "Paid. The register shows our bank payment.",
             "openInvestigations": 0
           },
           "pass": true,
@@ -338,7 +366,7 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "reason": "Paid. The register shows our bank payment.",
             "openInvestigations": 0
           },
           "pass": true,
@@ -387,6 +415,90 @@
           "resolved": false,
           "notes": [
             "Settled captures stay on the reconciler's list until 60 days after settlement, the consumer return window for R05, R07, R10 and R11."
+          ]
+        },
+        {
+          "family": "webhooks",
+          "id": "3f",
+          "title": "Settlement notice lost, return notice delivered",
+          "expectation": "The settlement is read from the bank's history, not invented; the store is short $97.50, not $195",
+          "module": {
+            "submissions": 1,
+            "debits": 1,
+            "orders": 1,
+            "registerPaid": "yes",
+            "paymentsAppliedAtRegister": 1,
+            "movements": [
+              {
+                "kind": "settlement",
+                "ref": "pay_0002",
+                "amountCents": 9750,
+                "on": "2026-09-29"
+              },
+              {
+                "kind": "return",
+                "ref": "pay_0002",
+                "amountCents": -9750,
+                "on": "2026-10-01",
+                "returnCode": "R01"
+              }
+            ],
+            "bankNetCents": 0,
+            "recordedNetCents": 0,
+            "exposureCents": 9750,
+            "unsettledCents": 0,
+            "shortCents": 9750,
+            "counterPayments": 0,
+            "outcome": "needs_staff",
+            "reason": "Bank returned the debit (R01). Money was taken back from the store.",
+            "openInvestigations": 0
+          },
+          "pass": true,
+          "resolved": false,
+          "notes": [
+            "Before reconciliation the ledger showed the store short 195.00; after reading the bank, 97.50."
+          ]
+        },
+        {
+          "family": "webhooks",
+          "id": "3g",
+          "title": "R10 dated day 59, notice lost, every bank read failing from day 59 to day 70",
+          "expectation": "Found on day 71: the watch closes only after a successful read past the window",
+          "module": {
+            "submissions": 1,
+            "debits": 1,
+            "orders": 1,
+            "registerPaid": "yes",
+            "paymentsAppliedAtRegister": 1,
+            "movements": [
+              {
+                "kind": "settlement",
+                "ref": "pay_0002",
+                "amountCents": 9750,
+                "on": "2026-09-29"
+              },
+              {
+                "kind": "return",
+                "ref": "pay_0002",
+                "amountCents": -9750,
+                "on": "2026-11-27",
+                "returnCode": "R10"
+              }
+            ],
+            "bankNetCents": 0,
+            "recordedNetCents": 0,
+            "exposureCents": 9750,
+            "unsettledCents": 0,
+            "shortCents": 9750,
+            "counterPayments": 0,
+            "outcome": "needs_staff",
+            "reason": "Bank returned the debit (R10). Money was taken back from the store.",
+            "openInvestigations": 0
+          },
+          "pass": true,
+          "resolved": false,
+          "notes": [
+            "An age cutoff would have dropped this capture after day 60. The watch closes only after a successful read at least 65 days after settlement (60-day window plus a 5-day reporting margin)."
           ]
         }
       ]
@@ -455,13 +567,13 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "reason": "Paid. The register shows our bank payment.",
             "openInvestigations": 0
           },
           "naive": {
             "submissions": 1,
             "debits": 1,
-            "orders": 2,
+            "orders": 1,
             "registerPaid": "no",
             "paymentsAppliedAtRegister": 0,
             "counterPayments": 0,
@@ -495,7 +607,7 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "needs_staff",
-            "reason": "The register has not confirmed order e6a8bb2c-c758-4bad-b672-4247f5f91966 after 5 minutes. Nothing was captured.",
+            "reason": "The register has not confirmed order a4bdf6d5-0b68-4980-a318-499eeea8033a after 5 minutes. Nothing was captured.",
             "openInvestigations": 1
           },
           "pass": true,
@@ -530,6 +642,72 @@
           "resolved": false,
           "notes": [
             "A fixed-delay automatic refund would be unsafe here: the shopper may be standing at the counter."
+          ]
+        },
+        {
+          "family": "order-rejected-or-unknown",
+          "id": "4e",
+          "title": "Order submission reaches the register, response lost",
+          "expectation": "Status read under our GUID finds it; 1 order",
+          "module": {
+            "submissions": 1,
+            "debits": 1,
+            "orders": 1,
+            "registerPaid": "yes",
+            "paymentsAppliedAtRegister": 1,
+            "movements": [],
+            "bankNetCents": 0,
+            "recordedNetCents": 0,
+            "exposureCents": 0,
+            "unsettledCents": 0,
+            "shortCents": 0,
+            "counterPayments": 0,
+            "outcome": "ready_for_pickup",
+            "reason": "Paid. The register shows our bank payment.",
+            "openInvestigations": 0
+          },
+          "naive": {
+            "submissions": 1,
+            "debits": 1,
+            "orders": 2,
+            "registerPaid": "no",
+            "paymentsAppliedAtRegister": 0,
+            "counterPayments": 0,
+            "movements": [],
+            "bankNetCents": 0,
+            "outcome": "completed",
+            "belief": "completed"
+          },
+          "pass": true,
+          "resolved": true,
+          "notes": []
+        },
+        {
+          "family": "order-rejected-or-unknown",
+          "id": "4f",
+          "title": "Same fault as 4b, on a register not confirmed to deduplicate by order id",
+          "expectation": "Not re-sent; a person checks the register; nothing captured",
+          "module": {
+            "submissions": 1,
+            "debits": 0,
+            "orders": 0,
+            "registerPaid": "no",
+            "paymentsAppliedAtRegister": 0,
+            "movements": [],
+            "bankNetCents": 0,
+            "recordedNetCents": 0,
+            "exposureCents": 0,
+            "unsettledCents": 0,
+            "shortCents": 0,
+            "counterPayments": 0,
+            "outcome": "needs_staff",
+            "reason": "The register has no record of order fb5bedbb-0770-40dc-a4d4-4b15abc0282f after a submission that timed out, and re-sending under the same id is not confirmed safe for this POS. Nothing was captured. Check the register before retrying.",
+            "openInvestigations": 1
+          },
+          "pass": true,
+          "resolved": false,
+          "notes": [
+            "The same capability gate the bank has: without confirmed deduplication, a timed-out submission is not replayed."
           ]
         }
       ]
@@ -583,8 +761,8 @@
         {
           "family": "register-not-acknowledged",
           "id": "5b",
-          "title": "Payment record accepted, response lost",
-          "expectation": "Status read first; payment applied once",
+          "title": "Payment record reached the register, response lost",
+          "expectation": "Applied once; a paid status alone does not prove it is ours",
           "module": {
             "submissions": 1,
             "debits": 1,
@@ -598,13 +776,15 @@
             "unsettledCents": 0,
             "shortCents": 0,
             "counterPayments": 0,
-            "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
-            "openInvestigations": 0
+            "outcome": "needs_staff",
+            "reason": "The register shows a payment, but this response does not establish whether it is our bank payment (pay_0002, $97.50 accepted by the bank). Check the payment record before handing over or refunding.",
+            "openInvestigations": 1
           },
           "pass": true,
-          "resolved": true,
-          "notes": []
+          "resolved": false,
+          "notes": [
+            "Cova's documented status says the order is paid, not by whom. Without a payment-reference lookup the module cannot tell our record from another payment, so it asks a person (see 5e for the same fault with a lookup)."
+          ]
         },
         {
           "family": "register-not-acknowledged",
@@ -653,7 +833,7 @@
             "shortCents": 0,
             "counterPayments": 1,
             "outcome": "needs_staff",
-            "reason": "The register shows a payment we did not record, and the bank also took $97.50 (pay_0002). Possible double collection: check how the register was paid before handing over or refunding.",
+            "reason": "The register shows a payment, but this response does not establish whether it is our bank payment (pay_0002, $97.50 accepted by the bank). Check the payment record before handing over or refunding.",
             "openInvestigations": 1
           },
           "naive": {
@@ -672,6 +852,102 @@
           "resolved": false,
           "notes": [
             "Our payment record is refused because the order is already paid; the register's status alone would say paid. The module reads the refusal as a warning, not as success."
+          ]
+        },
+        {
+          "family": "register-not-acknowledged",
+          "id": "5e",
+          "title": "Same fault as 5b, with a register that lists payments with their references",
+          "expectation": "Our reference and amount found: paid",
+          "module": {
+            "submissions": 1,
+            "debits": 1,
+            "orders": 1,
+            "registerPaid": "yes",
+            "paymentsAppliedAtRegister": 1,
+            "movements": [],
+            "bankNetCents": 0,
+            "recordedNetCents": 0,
+            "exposureCents": 0,
+            "unsettledCents": 0,
+            "shortCents": 0,
+            "counterPayments": 0,
+            "outcome": "ready_for_pickup",
+            "reason": "Paid. The register shows our bank payment.",
+            "openInvestigations": 0
+          },
+          "pass": true,
+          "resolved": true,
+          "notes": [
+            "Cova's documented status does not carry the payment reference. Whether another endpoint does is a discovery question."
+          ]
+        },
+        {
+          "family": "register-not-acknowledged",
+          "id": "5f",
+          "title": "Our payment record never arrives, then the cashier records cash",
+          "expectation": "Not called paid: possible double collection",
+          "module": {
+            "submissions": 1,
+            "debits": 1,
+            "orders": 1,
+            "registerPaid": "yes",
+            "paymentsAppliedAtRegister": 1,
+            "movements": [],
+            "bankNetCents": 0,
+            "recordedNetCents": 0,
+            "exposureCents": 0,
+            "unsettledCents": 0,
+            "shortCents": 0,
+            "counterPayments": 1,
+            "outcome": "needs_staff",
+            "reason": "The register shows a payment, but this response does not establish whether it is our bank payment (pay_0002, $97.50 accepted by the bank). Check the payment record before handing over or refunding.",
+            "openInvestigations": 1
+          },
+          "naive": {
+            "submissions": 1,
+            "debits": 1,
+            "orders": 1,
+            "registerPaid": "yes",
+            "paymentsAppliedAtRegister": 1,
+            "counterPayments": 1,
+            "movements": [],
+            "bankNetCents": 0,
+            "outcome": "completed",
+            "belief": "completed"
+          },
+          "pass": true,
+          "resolved": false,
+          "notes": [
+            "Before this fix, a paid status after a lost record was read as our payment."
+          ]
+        },
+        {
+          "family": "register-not-acknowledged",
+          "id": "5g",
+          "title": "Our payment record succeeds, the worker dies, the replay is refused as already paid",
+          "expectation": "Escalated without claiming who paid",
+          "module": {
+            "submissions": 1,
+            "debits": 1,
+            "orders": 1,
+            "registerPaid": "yes",
+            "paymentsAppliedAtRegister": 1,
+            "movements": [],
+            "bankNetCents": 0,
+            "recordedNetCents": 0,
+            "exposureCents": 0,
+            "unsettledCents": 0,
+            "shortCents": 0,
+            "counterPayments": 0,
+            "outcome": "needs_staff",
+            "reason": "The register shows a payment, but this response does not establish whether it is our bank payment (pay_0002, $97.50 accepted by the bank). Check the payment record before handing over or refunding.",
+            "openInvestigations": 1
+          },
+          "pass": true,
+          "resolved": false,
+          "notes": [
+            "Only our payment is at the register, but the refusal alone cannot prove it; with a payment lookup this would be recovered."
           ]
         }
       ]
@@ -728,7 +1004,7 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "reason": "Paid. The register shows our bank payment.",
             "openInvestigations": 0
           },
           "pass": true,
@@ -782,7 +1058,7 @@
             "shortCents": 0,
             "counterPayments": 0,
             "outcome": "needs_staff",
-            "reason": "Unpaid order 6d72ebf5-a14a-4a4c-9b81-1ad4b4b2a561 could not be cancelled (inventory already allocated). Nothing was captured.",
+            "reason": "Unpaid order a0b92e7c-2021-4a65-b77f-bce35c595831 could not be cancelled (inventory already allocated). Nothing was captured.",
             "openInvestigations": 1
           },
           "pass": true,
@@ -955,8 +1231,8 @@
             "unsettledCents": 0,
             "shortCents": 0,
             "counterPayments": 0,
-            "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "outcome": "closed",
+            "reason": "Refunded $97.50 (rf_0004). Not for pickup.",
             "openInvestigations": 0
           },
           "pass": true,
@@ -996,14 +1272,84 @@
             "unsettledCents": 0,
             "shortCents": 0,
             "counterPayments": 0,
-            "outcome": "ready_for_pickup",
-            "reason": "Paid. The register shows the payment.",
+            "outcome": "closed",
+            "reason": "Refunded $97.50 (rf_0004). Not for pickup.",
             "openInvestigations": 0
           },
           "pass": true,
           "resolved": true,
           "notes": [
             "Early notice: unknown_reference (the HTTP handler answers 503 so the provider retries); the reconciler also reads accepted refunds."
+          ]
+        },
+        {
+          "family": "refund-vs-return",
+          "id": "7f",
+          "title": "Register work delayed by an outage; the debit settles and comes back R01; then the register shows paid",
+          "expectation": "Stays with staff; ordinary handoff refused",
+          "module": {
+            "submissions": 1,
+            "debits": 1,
+            "orders": 1,
+            "registerPaid": "yes",
+            "paymentsAppliedAtRegister": 1,
+            "movements": [
+              {
+                "kind": "settlement",
+                "ref": "pay_0002",
+                "amountCents": 9750,
+                "on": "2026-09-29"
+              },
+              {
+                "kind": "return",
+                "ref": "pay_0002",
+                "amountCents": -9750,
+                "on": "2026-10-01",
+                "returnCode": "R01"
+              }
+            ],
+            "bankNetCents": 0,
+            "recordedNetCents": 0,
+            "exposureCents": 0,
+            "unsettledCents": 0,
+            "shortCents": 0,
+            "counterPayments": 0,
+            "outcome": "needs_staff",
+            "reason": "Bank returned the debit (R01). The register status does not clear it.",
+            "openInvestigations": 0
+          },
+          "pass": true,
+          "resolved": false,
+          "notes": [
+            "Ordinary handoff: financial_exception_on_record. A later register reading no longer overwrites a known return."
+          ]
+        },
+        {
+          "family": "refund-vs-return",
+          "id": "7g",
+          "title": "Order refunded before pickup",
+          "expectation": "Closed, not ready for pickup; ordinary handoff refused",
+          "module": {
+            "submissions": 1,
+            "debits": 1,
+            "orders": 1,
+            "registerPaid": "yes",
+            "paymentsAppliedAtRegister": 1,
+            "movements": [],
+            "bankNetCents": 0,
+            "recordedNetCents": 0,
+            "exposureCents": 0,
+            "unsettledCents": 0,
+            "shortCents": 0,
+            "counterPayments": 0,
+            "outcome": "closed",
+            "reason": "Refunded $97.50 (rf_0003). Not for pickup.",
+            "openInvestigations": 0
+          },
+          "pass": true,
+          "resolved": true,
+          "notes": [
+            "Ordinary handoff: financial_exception_on_record."
           ]
         }
       ]
@@ -1124,7 +1470,7 @@
       },
       {
         "id": "B",
-        "title": "Create and confirm the order, then debit"
+        "title": "Create and confirm the order, then debit (same amount guard)"
       },
       {
         "id": "C",
@@ -1198,11 +1544,11 @@
             "outcome": "Shopper debited the quote; register refuses it (total differs). Order open and unpaid."
           },
           "B": {
-            "debits": 1,
+            "debits": 0,
             "orders": 1,
-            "unpaidOpenOrders": 0,
+            "unpaidOpenOrders": 1,
             "moneyWithoutPaidOrder": false,
-            "outcome": "Completed, but the shopper was debited more than the kiosk showed."
+            "outcome": "Asks the shopper to approve the new total; unpaid order left open."
           },
           "C": {
             "debits": 0,
@@ -1269,7 +1615,7 @@
         {
           "at": "0:15",
           "lane": "bank",
-          "text": "Capture accepted. Money is moving."
+          "text": "Bank accepted the debit. Not settled yet."
         },
         {
           "at": "0:15",
@@ -1280,15 +1626,25 @@
         {
           "at": "0:30",
           "lane": "register",
-          "text": "Status read: payment applied. The register shows the order paid."
+          "text": "Status read: the register does not have the payment yet."
         },
         {
           "at": "0:30",
+          "lane": "register",
+          "text": "Payment record resent (2 of 3). The register accepted it."
+        },
+        {
+          "at": "0:45",
+          "lane": "register",
+          "text": "Status read: paid, after the register accepted our record."
+        },
+        {
+          "at": "0:45",
           "lane": "kiosk",
           "text": "Screen shows: Paid. Pick up at the counter."
         },
         {
-          "at": "0:30",
+          "at": "0:45",
           "lane": "staff",
           "text": "Order appears paid. Hand over as usual."
         }
@@ -1302,7 +1658,7 @@
         "outcome": "ready_for_pickup",
         "openInvestigations": 0
       },
-      "posOrderId": "b311e8c8-be65-4c10-9293-f33dfde1ddc3"
+      "posOrderId": "792798ec-f787-41ca-a59a-1e333d47ecf1"
     },
     "unresolved": {
       "ending": "unresolved",
@@ -1330,7 +1686,7 @@
         {
           "at": "0:15",
           "lane": "bank",
-          "text": "Capture accepted. Money is moving."
+          "text": "Bank accepted the debit. Not settled yet."
         },
         {
           "at": "0:15",
@@ -1387,7 +1743,7 @@
         "outcome": "needs_staff",
         "openInvestigations": 1
       },
-      "posOrderId": "87ab885c-c6cc-4c3b-984c-bfd10fab183b"
+      "posOrderId": "079d0a66-ac45-437e-a16d-bb0c3adb9f7d"
     }
   }
 }

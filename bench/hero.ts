@@ -28,7 +28,7 @@ function describe(
     case "pos_check_order:ready_for_payment":
       return { lane: "register", text: "Order confirmed with its final total." };
     case "bank_capture:accepted":
-      return { lane: "bank", text: "Capture accepted. Money is moving." };
+      return { lane: "bank", text: "Bank accepted the debit. Not settled yet." };
     case "pos_apply_payment:unknown":
       return {
         lane: "register",
@@ -39,8 +39,12 @@ function describe(
       };
     case "pos_check_payment:resubmit_payment":
       return { lane: "register", text: "Status read: the register does not have the payment yet." };
+    case "pos_apply_payment:accepted_202":
+      return seq > 1
+        ? { lane: "register", text: `Payment record resent (${seq} of 3). The register accepted it.` }
+        : null;
     case "pos_check_payment:applied":
-      return { lane: "register", text: "Status read: payment applied. The register shows the order paid." };
+      return { lane: "register", text: "Status read: paid, after the register accepted our record." };
     case "pos_check_payment:not_acknowledged":
       return { lane: "register", text: "Still no payment on the register. Resends stopped.", tone: "stop" };
     default:
@@ -51,7 +55,7 @@ function describe(
 async function branch(ending: "recovered" | "unresolved", pgUrl?: string) {
   const w = await makeWorld({ pgUrl });
   w.pos.faults.pay = ending === "recovered"
-    ? ["lose_response"]
+    ? ["drop_request"]
     : ["drop_request", "drop_request", "drop_request"];
   const r = await w.checkout();
   if (!r.ok) throw new Error(r.error);

@@ -84,7 +84,7 @@ const receipt = `
       </ul>
     </div>
   </div>
-  <figcaption>Same order, same timeout. Times from the simulated clock. Rows are the module's own event journal.</figcaption>
+  <figcaption>Same order, same timeout. Timeline derived from the module's event journal, on a simulated clock. Kiosk and staff messages illustrate the resulting states.</figcaption>
 </figure>`;
 
 // ------------------------------------------------------------------ the bench table
@@ -92,7 +92,8 @@ const endingOf = (r: Json) => {
   const o = r.module.outcome as string;
   if (o === "ready_for_pickup") return { label: "Recovered", cls: "" };
   if (o === "no_charge") return { label: "Nothing charged", cls: "" };
-  if (o === "saved_reference_not_usable" || o === "reauthentication_required") {
+  if (o === "closed") return { label: "Refunded, closed", cls: "" };
+  if (o === "saved_reference_not_usable" || o === "reauthentication_required" || o.startsWith("kiosk_request_id_reused")) {
     return { label: "Refused", cls: "" };
   }
   if (o === "needs_new_consent") return { label: "Shopper approves again", cls: "amber" };
@@ -113,9 +114,11 @@ const naiveLine = (r: Json) => {
   if (!n) return "";
   const bits: string[] = [];
   bits.push(`${n.debits} debit${n.debits === 1 ? "" : "s"}`);
-  bits.push(`${n.orders} order${n.orders === 1 ? "" : "s"}`);
+  bits.push(`${n.orders} POS order record${n.orders === 1 ? "" : "s"}`);
   bits.push(`register ${n.registerPaid === "yes" ? "paid" : "unpaid"}`);
-  if (n.counterPayments) bits.push(`and the shopper also paid ${plural(n.counterPayments, "time")} at the counter`);
+  if (n.counterPayments) {
+    bits.push(`and the shopper also paid ${plural(n.counterPayments, "time")} at the counter`);
+  }
   if (n.recordedNetCents !== undefined && n.recordedNetCents !== n.bankNetCents) {
     bits.push(`books ${usd(n.recordedNetCents)} for ${usd(n.bankNetCents)} received`);
   }
@@ -129,9 +132,10 @@ const mline = (r: Json, e: { label: string; cls: string }) => {
     ? m.movements.map((x: Json) => signed(x.amountCents) + (x.returnCode ? " " + x.returnCode : "")).join(" ")
     : "none settled";
   return `<p class="mline"><span class="end ${e.cls}">${e.label}</span>${
-    (m.shortCents ? `<span class="exp">store short ${usd(m.shortCents)}</span>` : "") + (m.unsettledCents ? `<span class="exp amber">awaiting settlement ${usd(m.unsettledCents)}</span>` : "")
+    (m.shortCents ? `<span class="exp">store short ${usd(m.shortCents)}</span>` : "") +
+    (m.unsettledCents ? `<span class="exp amber">awaiting settlement ${usd(m.unsettledCents)}</span>` : "")
   }<br>${plural(m.submissions, "submission")}, ${plural(m.debits, "debit")}, ${
-    plural(m.orders, "order")
+    plural(m.orders, "POS order record")
   }, register ${m.registerPaid === "yes" ? "paid" : "unpaid"}, ${settled}</p>`;
 };
 const cell = (label: string, v: string, cls = "num") => `<td class="${cls}" data-l="${label}">${v}</td>`;
@@ -170,14 +174,17 @@ const benchRows = families.map((f, fi) => `
     }${mline(r, e)}</td>
       ${cell("Kiosk submissions", String(m.submissions))}
       ${cell("Debits the bank took", String(m.debits))}
-      ${cell("Orders at the register", String(m.orders))}
+      ${cell("POS order records", String(m.orders))}
       ${cell("Register shows paid", m.registerPaid)}
       ${cell("Money settled", moneyCell(m))}
       ${
       cell(
         "Ending",
         `<span class="end ${e.cls}">${e.label}</span>${
-          (m.shortCents ? `<span class="exp">store short ${usd(m.shortCents)}</span>` : "") + (m.unsettledCents ? `<span class="exp amber">awaiting settlement ${usd(m.unsettledCents)}</span>` : "")
+          (m.shortCents ? `<span class="exp">store short ${usd(m.shortCents)}</span>` : "") +
+          (m.unsettledCents
+            ? `<span class="exp amber">awaiting settlement ${usd(m.unsettledCents)}</span>`
+            : "")
         }`,
       )
     }
@@ -202,10 +209,13 @@ const ordTable = `
         const c = r.cells[s.id];
         const bad = c.moneyWithoutPaidOrder || c.unpaidOpenOrders > 0 ||
           /more than the kiosk/.test(c.outcome);
-        const text = String(c.outcome).replace(/^[a-z_]+: /, "").replace("insufficient_funds", "insufficient funds");
+        const text = String(c.outcome).replace(/^[a-z_]+: /, "").replace(
+          "insufficient_funds",
+          "insufficient funds",
+        );
         return `<td data-l="${esc(s.id)}" class="${bad ? "red" : ""}">${
           esc(text)
-        }<span class="dim small">${c.debits} debit${c.debits === 1 ? "" : "s"}, ${c.orders} order${
+        }<span class="dim small">${c.debits} debit${c.debits === 1 ? "" : "s"}, ${c.orders} POS order record${
           c.orders === 1 ? "" : "s"
         }${c.unpaidOpenOrders ? `, ${c.unpaidOpenOrders} left unpaid` : ""}</span></td>`;
       }).join("")
@@ -324,6 +334,7 @@ table{border-collapse:collapse;width:100%}
 .reason.amber{color:var(--amber)}
 .naive{margin:6px 0 0;font-size:13px;color:var(--faded);font-style:italic}
 .note{margin:6px 0 0;font-size:13px;color:var(--faded)}
+.narrow-only{display:none}
 .mline{display:none}
 .end{font-weight:600}
 .end.red{color:var(--red)}
@@ -368,9 +379,10 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
   body{font-size:16px}
   .wrap{padding:0 16px}
   .hero{gap:28px;padding:32px 0 48px}
-  h1{font-size:31px;margin-bottom:16px}
+  .wide-only{display:none}
+  .narrow-only{display:block;font-size:16px;line-height:1.55;margin:0}
+  h1{margin-bottom:16px}
   .status{font-size:13.5px;margin-bottom:18px}
-  .lede p.thesis{font-size:16px;margin-bottom:12px}
   .lede .links{margin-top:14px}
   .rc-center{letter-spacing:0}
   .paper{padding:22px 16px 20px;font-size:13.5px}
@@ -414,28 +426,29 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
       <h1>When kiosk payment and the register disagree</h1>
       <p class="status">Simulated payment and POS services. Tested orchestration code. Public-source feasibility review dated 28 September 2026. No live payments.</p>
       <p class="thesis">A kiosk checkout attempt, an accepted payment and a completed purchase are not the same event.</p>
-      <p class="thesis">Here the bank has taken the money and the call that tells the register times out. The module asks the register what it has before doing anything else. Sometimes the register has it. Sometimes it never will, and staff need to know before the shopper is asked to pay a second time.</p>
+      <p class="thesis wide-only">Here the bank has accepted the debit and the call that tells the register times out. The module asks the register what it has before doing anything else. Sometimes the register has it. Sometimes it never will, and staff need to know before the shopper is asked to pay a second time.</p>
       <p class="links"><a href="${repo}">The code and tests</a><a href="#feasibility">The feasibility note</a></p>
     </div>
     ${receipt}
+    <p class="thesis narrow-only">Here the bank has accepted the debit and the call that tells the register times out. The module asks the register what it has before doing anything else. Sometimes the register has it. Sometimes it never will, and staff need to know before the shopper is asked to pay a second time.</p>
   </header>
 </div>
 
 <section class="band" aria-labelledby="bench-h">
   <div class="wrap">
-    <h2 id="bench-h">Every failure replayed, measured separately</h2>
-    <p class="intro">${totalSeq} sequences in eight families, each on a fresh database against simulated bank and register services. The counts are what the simulated bank and register actually did, not what the code believes. ${personEndings} sequences end with a person deciding: for them, stopping is the correct result.</p>
+    <h2 id="bench-h">${totalSeq} failure sequences, measured separately</h2>
+    <p class="intro">Eight families, each sequence on a fresh database against simulated bank and register services. The counts are what the simulated bank and register actually did, not what the code believes. ${personEndings} sequences end with a person deciding: for them, stopping is the correct result.</p>
     <p class="intro">A naive version runs against the same faults: debit first, then the order, and a fresh key and a fresh order id on every retry. It passes a happy-path demo; its results sit under each sequence it applies to. As a check on the bench itself, changing the module to send a fresh key on retry turns three sequences red.</p>
     <p class="boundary">The tests verify this module against the stated simulated contracts. They do not certify provider behavior or prevent independent cashier actions. The register side is a contract-shaped simulator of Cova's public Sales Order API, not a certified integration.</p>
     <table class="bench">
-      <thead><tr><th scope="col">Sequence</th><th scope="col">Kiosk submissions</th><th scope="col">Debits the bank took</th><th scope="col">Orders at the register</th><th scope="col">Register shows paid</th><th scope="col">Money settled</th><th scope="col">Ending</th></tr></thead>
+      <thead><tr><th scope="col">Sequence</th><th scope="col">Kiosk submissions</th><th scope="col">Debits the bank took</th><th scope="col">POS order records</th><th scope="col">Register shows paid</th><th scope="col">Money settled</th><th scope="col">Ending</th></tr></thead>
       ${benchRows}
     </table>
 
     <h3>Which comes first, the debit or the order</h3>
-    <p class="intro">The same faults, run against three orders of operations. A and B are minimal flows written for this comparison; C is the module above.</p>
+    <p class="intro">The same faults, run against three orders of operations. A and B are minimal flows written for this comparison, with the module's amount guard (never debit more than the shopper approved); C is the module above. The comparison still mixes ordering with other safeguards the module has, such as reading status before resending.</p>
     ${ordTable}
-    <p class="ord-note">No order is safe on its own. C is chosen on two assumptions to confirm with the provider: preauthorization without funds movement, and capture of at most the preauthorized amount. What C introduces is the window between the capture and the register showing the order paid. That window is what the first screen of this page is about, and it is surfaced, never marked complete.</p>
+    <p class="ord-note">No order is safe on its own. C is chosen on two assumptions to confirm with the provider: preauthorization without funds movement (Aeropay documents API capture of a preauthorization), and capture of at most the preauthorized amount. What C introduces is the window between the capture and the register showing the order paid. That window is what the first screen of this page is about, and it is surfaced, never marked complete.</p>
   </div>
 </section>
 
@@ -446,11 +459,11 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
     <table class="routes">
       <thead><tr><th scope="col">Question</th><th scope="col">What the public source establishes</th><th scope="col">Still open</th><th scope="col">Blocks a pilot</th></tr></thead>
       <tbody>
-        <tr><td>Aeropay, embedded</td><td>White-label user creation by API. Preauthorized transactions "do not initiate the movement of any funds, but instead store the details of a transaction that must be captured later by an employee." <span class="src">dev.aero.inc</span></td><td>How a kiosk with no employee at the moment of payment captures. Recovery: for several return codes its help center sends the shopper to log in to Aeropay. Platform structure: its terms bar initiating transactions for others. Written position on licensed THC retail: its cannabis page now redirects to "specialized retail".</td><td class="block yes">Yes, until answered in writing</td></tr>
+        <tr><td>Aeropay, embedded</td><td>White-label user creation by API. Preauthorized transactions move no funds; the preauthorization guide documents API capture (<code>/v2/capturePreauthTransaction</code>), even though the quick start speaks of capture "by an employee". <span class="src">dev.aero.inc</span></td><td>Whether Aeropay permits the proposed unattended kiosk flow and platform/merchant arrangement, including the required credentials and actor permissions. Recovery: its help center sends customers to their Aeropay account for several return codes; whether a white-label flow can keep that inside the kiosk is open. Licensed THC eligibility: its cannabis page now redirects to "specialized retail", which calls for checking, not concluding.</td><td class="block yes">Yes, until answered in writing</td></tr>
         <tr><td>Aeropay, fee and returns</td><td>Consumer fee capped at what Aeropay charges the merchant. Under non guaranteed ACH the merchant funds a reserve, reimburses all returns weekly by auto debit, "will not attempt to recover on any returned payments", and Aeropay "will retain 25% of the payments recovered". <span class="src">Aeropay merchant terms</span></td><td>Which product a pilot would be on, the reserve, and who is debited for a return.</td><td class="block yes">Yes, for the fee design</td></tr>
         <tr><td>CanPay RemotePay</td><td>Prepayment in merchants' apps by one-click payment or guest checkout; merchants can adjust amounts; kiosks listed. <span class="src">canpaydebit.com</span></td><td>Saved reference tied to the kiosk platform's shopper profile, returning shoppers, recovery, access for a platform, fees.</td><td class="block">Unknown</td></tr>
         <tr><td>Dutchie Pay by Bank</td><td>No funds reimbursement: a void or return in the POS does not reverse the payment; refunds in cash or store credit. <span class="src">Dutchie support</span></td><td>Whether a third-party kiosk can use it at all.</td><td class="block">For a Dutchie store</td></tr>
-        <tr><td>Paid at the kiosk, seen at the register</td><td>Cova: CovaOrderPayment, amount must equal the sale total, paid orders cannot be cancelled. Dutchie: a preorder's payment happens at pickup; idempotency needs both ConsumerKey and IdempotencyKey. <span class="src">Cova API portal, Dutchie POS swagger</span></td><td>How each register shows a kiosk-paid order to the cashier, and whether a repeated submit or payment record is deduplicated.</td><td class="block yes">Yes</td></tr>
+        <tr><td>Paid at the kiosk, seen at the register</td><td>Cova: CovaOrderPayment, amount must equal the sale total, paid orders cannot be cancelled; its documented status says whether an order is paid, not by which payment. Dutchie: a preorder's payment happens at pickup; idempotency needs both ConsumerKey and IdempotencyKey. Treez: payment posted to a ticket in a separate call; refunds not handled by the Ticket API. <span class="src">Cova API portal, Dutchie POS swagger, Treez Ticket API</span></td><td>How each register shows a kiosk-paid order to the cashier; whether it exposes which payment it holds (to rule out a double collection); whether a repeated submit or payment record is deduplicated.</td><td class="block yes">Yes</td></tr>
         <tr><td>ACH timing</td><td>Most returns within 2 banking days of settlement; consumer unauthorized returns (R05, R07, R10, R11) within 60 days; a refunded debit can still be returned, debiting the merchant twice. <span class="src">Plaid</span></td><td>Who bears it, by contract. Which party holds the 2026 Nacha fraud-monitoring duties.</td><td class="block">No, but shapes the staff screen</td></tr>
       </tbody>
     </table>
@@ -461,8 +474,10 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
         <ul>
           <li>Postgres schema with payment, money movements, order, register acknowledgment and handoff kept apart, and a reconciliation view.</li>
           <li>Short-transaction durable operations: claim, call outside any transaction, record with a claim token; same key on every retry.</li>
-          <li>Signed webhook ingestion, deduplicated by event and by fact. A reconciler reads the bank for captures until 60 days after settlement (the consumer return window) and for accepted refunds, so a lost notice is found.</li>
-          <li>The disclosed fee is set on the server; a fee sent by the kiosk is ignored.</li>
+          <li>Signed webhook ingestion, deduplicated by event and by fact. A reconciler reads the bank for any capture missing its settlement, for settled captures until a successful read 65 days after settlement (60-day consumer window plus a reporting margin), and for accepted refunds.</li>
+          <li>The disclosed fee is set on the server; a fee sent by the kiosk is ignored. A kiosk request id is bound to a fingerprint of the whole intent.</li>
+          <li>A known return or refund is never cleared by a later register reading, and blocks ordinary handoff. A paid register status is not taken as proof of our payment unless the register accepted our record or lists our reference.</li>
+          <li>The scheduled tick runs pending operations and then reads the bank for lost notices.</li>
           <li>The eight failure families above, the naive baseline, and the order-of-operations comparison.</li>
           <li>Database roles: browser roles read and call nothing.</li>
         </ul>
