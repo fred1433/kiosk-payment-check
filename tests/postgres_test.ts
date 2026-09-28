@@ -3,11 +3,20 @@
 // See README: `scripts/test-postgres.sh` starts a throwaway server and runs these.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { freshPostgres, makeWorld, WEBHOOK_SECRET } from "../bench/world.ts";
+import {
+  CART,
+  FEE_CENTS,
+  freshPostgres,
+  makeWorld,
+  QUOTE_CENTS,
+  SHOPPER,
+  STORE,
+  WEBHOOK_SECRET,
+} from "../bench/world.ts";
 import { openPostgres } from "../src/db.ts";
 import { drain, runOnce, WorkerCrash } from "../src/worker.ts";
 import type { OperationRow } from "../src/workflow.ts";
-import { reconciliation } from "../src/service.ts";
+import { pollUnsettledCaptures, reconciliation, requestRefund, startCheckout } from "../src/service.ts";
 
 const url = Deno.env.get("DATABASE_URL");
 const opts = { ignore: !url, sanitizeOps: false, sanitizeResources: false };
@@ -165,6 +174,55 @@ Deno.test(
     await assertRejects(() => one.query(`update kiosk.events set type = 'x'`), Error, "append_only");
     await assertRejects(() => one.query(`delete from kiosk.events`), Error, "append_only");
     await one.close();
+  },
+);
+
+Deno.test(
+  { name: "pg: a whole checkout runs as service_role; direct table writes are refused", ...opts },
+  async () => {
+    const w = await makeWorld({ pgUrl: url });
+    const [{ db }] = await w.sql.query<{ db: string }>(`select current_database() as db`);
+    const u = new URL(url!);
+    u.pathname = `/${db}`;
+    const svc = openPostgres(u.toString(), 1); // one connection, so the role sticks
+    await svc.query(`set role service_role`);
+    const r = await startCheckout(svc, w.clock, {
+      storeId: STORE,
+      shopperId: SHOPPER,
+      kioskRequestId: "kiosk-7-tap-svc001",
+      savedRefId: w.savedRefId,
+      quotedTotalCents: QUOTE_CENTS,
+      feeCents: FEE_CENTS,
+      cart: CART,
+    });
+    assert(r.ok);
+    await drain({ sql: svc, bank: w.bank, pos: w.pos, clock: w.clock, workerId: "svc", leaseSeconds: 60 }, {
+      advance: (s) => w.clock.advance(s),
+    });
+    w.bank.settleAllPending("2026-09-29");
+    assertEquals(await pollUnsettledCaptures(svc, w.clock, w.bank), 1);
+    assertEquals(await requestRefund(svc, w.clock, r.checkoutId, 100, "goods_returned", "m"), {
+      ok: true,
+      created: true,
+    });
+    const rec = await reconciliation(svc, r.checkoutId);
+    assertEquals(rec.outcome, "ready_for_pickup");
+    await assertRejects(
+      () => svc.query(`update kiosk.checkouts set outcome = 'closed'`),
+      Error,
+      "permission denied",
+    );
+    await assertRejects(
+      () =>
+        svc.query(
+          `insert into kiosk.money_movements (checkout_id, kind, provider_ref, amount_cents, effective_date, source) values ($1, 'settlement', 'x', 1, current_date, 'poll')`,
+          [r.checkoutId],
+        ),
+      Error,
+      "permission denied",
+    );
+    await svc.close();
+    await w.close();
   },
 );
 

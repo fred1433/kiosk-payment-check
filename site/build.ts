@@ -13,12 +13,19 @@ try {
 
 // The two runs must agree on every measure, or the page refuses to build.
 const strip = (d: Json) =>
-  JSON.stringify(d.families.map((f: Json) => f.results.map((r: Json) => ({ id: r.id, pass: r.pass, m: { ...r.module, reason: undefined } }))));
+  JSON.stringify(
+    d.families.map((f: Json) =>
+      f.results.map((r: Json) => ({ id: r.id, pass: r.pass, m: { ...r.module, reason: undefined } }))
+    ),
+  );
 const sameOnServer = server ? strip(server) === strip(pglite) : null;
 if (server && !sameOnServer) throw new Error("PGlite and Postgres server results differ; not building.");
 
 const esc = (s: unknown) =>
-  String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+  String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll(
+    '"',
+    "&quot;",
+  );
 const usd = (c: number) => `${c < 0 ? "-" : ""}$${(Math.abs(c) / 100).toFixed(2)}`;
 const signed = (c: number) => `${c > 0 ? "+" : c < 0 ? "-" : ""}${(Math.abs(c) / 100).toFixed(2)}`;
 
@@ -28,9 +35,16 @@ const rec = hero.recovered.rows as Json[];
 const unr = hero.unresolved.rows as Json[];
 let shared = 0;
 while (shared < rec.length && shared < unr.length && rec[shared].text === unr[shared].text) shared++;
-const laneName: Record<string, string> = { kiosk: "KIOSK", bank: "BANK", register: "REGISTER", staff: "STAFF" };
+const laneName: Record<string, string> = {
+  kiosk: "KIOSK",
+  bank: "BANK",
+  register: "REGISTER",
+  staff: "STAFF",
+};
 const row = (r: Json) =>
-  `<li class="ev ${r.tone ?? ""}"><span class="t">${esc(r.at)}</span><span class="l">${laneName[r.lane]}</span><span class="x">${esc(r.text)}</span></li>`;
+  `<li class="ev ${r.tone ?? ""}"><span class="t">${esc(r.at)}</span><span class="l">${
+    laneName[r.lane]
+  }</span><span class="x">${esc(r.text)}</span></li>`;
 
 const orderId = String(hero.recovered.posOrderId).slice(0, 8).toUpperCase();
 const receipt = `
@@ -78,15 +92,22 @@ const endingOf = (r: Json) => {
   const o = r.module.outcome as string;
   if (o === "ready_for_pickup") return { label: "Recovered", cls: "" };
   if (o === "no_charge") return { label: "Nothing charged", cls: "" };
-  if (o === "saved_reference_not_usable" || o === "reauthentication_required") return { label: "Refused", cls: "" };
+  if (o === "saved_reference_not_usable" || o === "reauthentication_required") {
+    return { label: "Refused", cls: "" };
+  }
   if (o === "needs_new_consent") return { label: "Shopper approves again", cls: "amber" };
   if (r.id === "7b") return { label: "Refund refused", cls: "" };
   return { label: "Person decides", cls: "red" };
 };
 const moneyCell = (m: Json) => {
   if (!m.movements.length) return `<span class="dim">none settled</span>`;
-  return m.movements.map((x: Json) => `<span class="mv ${x.amountCents < 0 ? "neg" : ""}">${signed(x.amountCents)}${x.returnCode ? ` ${x.returnCode}` : ""}</span>`).join(" ");
+  return m.movements.map((x: Json) =>
+    `<span class="mv ${x.amountCents < 0 ? "neg" : ""}">${signed(x.amountCents)}${
+      x.returnCode ? ` ${x.returnCode}` : ""
+    }</span>`
+  ).join(" ");
 };
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const naiveLine = (r: Json) => {
   const n = r.naive;
   if (!n) return "";
@@ -94,14 +115,24 @@ const naiveLine = (r: Json) => {
   bits.push(`${n.debits} debit${n.debits === 1 ? "" : "s"}`);
   bits.push(`${n.orders} order${n.orders === 1 ? "" : "s"}`);
   bits.push(`register ${n.registerPaid === "yes" ? "paid" : "unpaid"}`);
-  if (n.recordedNetCents !== undefined && n.recordedNetCents !== n.bankNetCents) bits.push(`books ${usd(n.recordedNetCents)} for ${usd(n.bankNetCents)} received`);
-  return `<p class="naive">Naive baseline, same fault: ${bits.join(", ")}; it reports “${esc(n.belief.replaceAll("_", " "))}”.</p>`;
+  if (n.counterPayments) bits.push(`and the shopper also paid ${plural(n.counterPayments, "time")} at the counter`);
+  if (n.recordedNetCents !== undefined && n.recordedNetCents !== n.bankNetCents) {
+    bits.push(`books ${usd(n.recordedNetCents)} for ${usd(n.bankNetCents)} received`);
+  }
+  return `<p class="naive">Naive baseline, same fault: ${bits.join(", ")}; it reports “${
+    esc(n.belief.replaceAll("_", " "))
+  }”.</p>`;
 };
-const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const mline = (r: Json, e: { label: string; cls: string }) => {
   const m = r.module;
-  const settled = m.movements.length ? m.movements.map((x: Json) => signed(x.amountCents) + (x.returnCode ? " " + x.returnCode : "")).join(" ") : "none settled";
-  return `<p class="mline"><span class="end ${e.cls}">${e.label}</span>${m.exposureCents ? `<span class="exp"> store short ${usd(m.exposureCents)}</span>` : ""}<br>${plural(m.submissions, "submission")}, ${plural(m.debits, "debit")}, ${plural(m.orders, "order")}, register ${m.registerPaid === "yes" ? "paid" : "unpaid"}, ${settled}</p>`;
+  const settled = m.movements.length
+    ? m.movements.map((x: Json) => signed(x.amountCents) + (x.returnCode ? " " + x.returnCode : "")).join(" ")
+    : "none settled";
+  return `<p class="mline"><span class="end ${e.cls}">${e.label}</span>${
+    (m.shortCents ? `<span class="exp">store short ${usd(m.shortCents)}</span>` : "") + (m.unsettledCents ? `<span class="exp amber">awaiting settlement ${usd(m.unsettledCents)}</span>` : "")
+  }<br>${plural(m.submissions, "submission")}, ${plural(m.debits, "debit")}, ${
+    plural(m.orders, "order")
+  }, register ${m.registerPaid === "yes" ? "paid" : "unpaid"}, ${settled}</p>`;
 };
 const cell = (label: string, v: string, cls = "num") => `<td class="${cls}" data-l="${label}">${v}</td>`;
 
@@ -113,26 +144,43 @@ const tally = (rs: Json[]) => {
 const SHOW_NOTES = new Set(["2c", "4b", "5a", "6b", "7a", "7d"]);
 const families = pglite.families as Json[];
 const totalSeq = families.reduce((a, f) => a + f.results.length, 0);
-const personEndings = families.flatMap((f) => f.results).filter((r: Json) => endingOf(r).cls === "red").length;
+const personEndings =
+  families.flatMap((f) => f.results).filter((r: Json) => endingOf(r).cls === "red").length;
 
 const benchRows = families.map((f, fi) => `
   <tbody class="fam">
-    <tr class="fam-h"><th colspan="7" scope="rowgroup"><button type="button" class="fam-toggle" aria-expanded="true"><span class="fn">${fi + 1}</span> ${esc(f.title)}<span class="dem">${esc(f.demonstrates)}</span><span class="tally">${tally(f.results)}</span></button></th></tr>
+    <tr class="fam-h"><th colspan="7" scope="rowgroup"><button type="button" class="fam-toggle" aria-expanded="true"><span class="fn">${
+  fi + 1
+}</span> ${esc(f.title)}<span class="dem">${esc(f.demonstrates)}</span><span class="tally">${
+  tally(f.results)
+}</span></button></th></tr>
     ${
   f.results.map((r: Json) => {
     const m = r.module;
     const e = endingOf(r);
-    const shortId = (t: string) => t.replace(/([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "$1");
-    const reason = e.cls === "red" || e.cls === "amber" ? `<p class="reason ${e.cls}">${esc(shortId(m.reason ?? ""))}</p>` : "";
+    const shortId = (t: string) =>
+      t.replace(/([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "$1");
+    const reason = e.cls === "red" || e.cls === "amber"
+      ? `<p class="reason ${e.cls}">${esc(shortId(m.reason ?? ""))}</p>`
+      : "";
     const note = SHOW_NOTES.has(r.id) && r.notes?.length ? `<p class="note">${esc(r.notes.at(-1))}</p>` : "";
     return `<tr class="${e.cls}">
-      <td class="seq" data-l=""><span class="sid">${esc(r.id)}</span> ${esc(r.title)}${reason}${note}${naiveLine(r)}${mline(r, e)}</td>
+      <td class="seq" data-l=""><span class="sid">${esc(r.id)}</span> ${esc(r.title)}${reason}${note}${
+      naiveLine(r)
+    }${mline(r, e)}</td>
       ${cell("Kiosk submissions", String(m.submissions))}
       ${cell("Debits the bank took", String(m.debits))}
       ${cell("Orders at the register", String(m.orders))}
       ${cell("Register shows paid", m.registerPaid)}
       ${cell("Money settled", moneyCell(m))}
-      ${cell("Ending", `<span class="end ${e.cls}">${e.label}</span>${m.exposureCents ? `<span class="exp">store short ${usd(m.exposureCents)}</span>` : ""}`)}
+      ${
+      cell(
+        "Ending",
+        `<span class="end ${e.cls}">${e.label}</span>${
+          (m.shortCents ? `<span class="exp">store short ${usd(m.shortCents)}</span>` : "") + (m.unsettledCents ? `<span class="exp amber">awaiting settlement ${usd(m.unsettledCents)}</span>` : "")
+        }`,
+      )
+    }
     </tr>`;
   }).join("")
 }
@@ -142,16 +190,24 @@ const benchRows = families.map((f, fi) => `
 const ord = pglite.orderings as Json;
 const ordTable = `
 <table class="ord">
-  <thead><tr><th scope="col">Same fault</th>${ord.strategies.map((s: Json) => `<th scope="col"><span class="sid">${s.id}</span> ${esc(s.title)}</th>`).join("")}</tr></thead>
+  <thead><tr><th scope="col">Same fault</th>${
+  ord.strategies.map((s: Json) => `<th scope="col"><span class="sid">${s.id}</span> ${esc(s.title)}</th>`)
+    .join("")
+}</tr></thead>
   <tbody>
   ${
   ord.rows.map((r: Json) =>
     `<tr><th scope="row">${esc(r.title)}</th>${
       ord.strategies.map((s: Json) => {
         const c = r.cells[s.id];
-        const bad = c.moneyWithoutPaidOrder || c.unpaidOpenOrders > 0 || /more than the kiosk/.test(c.outcome);
-        const text = String(c.outcome).replace(/^[a-z_]+: /, "").replaceAll("_", " ");
-        return `<td data-l="${esc(s.id)}" class="${bad ? "red" : ""}">${esc(text)}<span class="dim small">${c.debits} debit${c.debits === 1 ? "" : "s"}, ${c.orders} order${c.orders === 1 ? "" : "s"}${c.unpaidOpenOrders ? `, ${c.unpaidOpenOrders} left unpaid` : ""}</span></td>`;
+        const bad = c.moneyWithoutPaidOrder || c.unpaidOpenOrders > 0 ||
+          /more than the kiosk/.test(c.outcome);
+        const text = String(c.outcome).replace(/^[a-z_]+: /, "").replace("insufficient_funds", "insufficient funds");
+        return `<td data-l="${esc(s.id)}" class="${bad ? "red" : ""}">${
+          esc(text)
+        }<span class="dim small">${c.debits} debit${c.debits === 1 ? "" : "s"}, ${c.orders} order${
+          c.orders === 1 ? "" : "s"
+        }${c.unpaidOpenOrders ? `, ${c.unpaidOpenOrders} left unpaid` : ""}</span></td>`;
       }).join("")
     }</tr>`
   ).join("")
@@ -274,6 +330,7 @@ table{border-collapse:collapse;width:100%}
 .end.amber{color:var(--amber)}
 tr.red td.seq{box-shadow:inset 3px 0 0 var(--red);padding-left:12px}
 .exp{display:block;color:var(--red);font-size:13px}
+.exp.amber{color:var(--amber)}
 .mv{font-family:var(--receipt);font-size:13.5px}
 .mv.neg{color:var(--red)}
 
@@ -389,8 +446,8 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
     <table class="routes">
       <thead><tr><th scope="col">Question</th><th scope="col">What the public source establishes</th><th scope="col">Still open</th><th scope="col">Blocks a pilot</th></tr></thead>
       <tbody>
-        <tr><td>Aeropay, embedded</td><td>White-label user creation by API; preauthorized transactions that move no funds until captured. <span class="src">dev.aero.inc</span></td><td>Recovery: for several return codes its help center sends the shopper to log in to Aeropay. Platform structure: its terms bar initiating transactions for others. Written position on licensed THC retail: its cannabis page now redirects to "specialized retail".</td><td class="block yes">Yes, until answered in writing</td></tr>
-        <tr><td>Aeropay, fee and returns</td><td>Consumer fee capped at what Aeropay charges the merchant; a non-guaranteed ACH option has the merchant reimburse all returns. <span class="src">Aeropay merchant terms</span></td><td>Which product a pilot would be on, and who is debited for a return.</td><td class="block yes">Yes, for the fee design</td></tr>
+        <tr><td>Aeropay, embedded</td><td>White-label user creation by API. Preauthorized transactions "do not initiate the movement of any funds, but instead store the details of a transaction that must be captured later by an employee." <span class="src">dev.aero.inc</span></td><td>How a kiosk with no employee at the moment of payment captures. Recovery: for several return codes its help center sends the shopper to log in to Aeropay. Platform structure: its terms bar initiating transactions for others. Written position on licensed THC retail: its cannabis page now redirects to "specialized retail".</td><td class="block yes">Yes, until answered in writing</td></tr>
+        <tr><td>Aeropay, fee and returns</td><td>Consumer fee capped at what Aeropay charges the merchant. Under non guaranteed ACH the merchant funds a reserve, reimburses all returns weekly by auto debit, "will not attempt to recover on any returned payments", and Aeropay "will retain 25% of the payments recovered". <span class="src">Aeropay merchant terms</span></td><td>Which product a pilot would be on, the reserve, and who is debited for a return.</td><td class="block yes">Yes, for the fee design</td></tr>
         <tr><td>CanPay RemotePay</td><td>Prepayment in merchants' apps by one-click payment or guest checkout; merchants can adjust amounts; kiosks listed. <span class="src">canpaydebit.com</span></td><td>Saved reference tied to the kiosk platform's shopper profile, returning shoppers, recovery, access for a platform, fees.</td><td class="block">Unknown</td></tr>
         <tr><td>Dutchie Pay by Bank</td><td>No funds reimbursement: a void or return in the POS does not reverse the payment; refunds in cash or store credit. <span class="src">Dutchie support</span></td><td>Whether a third-party kiosk can use it at all.</td><td class="block">For a Dutchie store</td></tr>
         <tr><td>Paid at the kiosk, seen at the register</td><td>Cova: CovaOrderPayment, amount must equal the sale total, paid orders cannot be cancelled. Dutchie: a preorder's payment happens at pickup; idempotency needs both ConsumerKey and IdempotencyKey. <span class="src">Cova API portal, Dutchie POS swagger</span></td><td>How each register shows a kiosk-paid order to the cashier, and whether a repeated submit or payment record is deduplicated.</td><td class="block yes">Yes</td></tr>
@@ -404,7 +461,8 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
         <ul>
           <li>Postgres schema with payment, money movements, order, register acknowledgment and handoff kept apart, and a reconciliation view.</li>
           <li>Short-transaction durable operations: claim, call outside any transaction, record with a claim token; same key on every retry.</li>
-          <li>Signed webhook ingestion, deduplicated by event and by fact; polling for missing webhooks.</li>
+          <li>Signed webhook ingestion, deduplicated by event and by fact. A reconciler reads the bank for captures until 60 days after settlement (the consumer return window) and for accepted refunds, so a lost notice is found.</li>
+          <li>The disclosed fee is set on the server; a fee sent by the kiosk is ignored.</li>
           <li>The eight failure families above, the naive baseline, and the order-of-operations comparison.</li>
           <li>Database roles: browser roles read and call nothing.</li>
         </ul>
@@ -422,7 +480,11 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
     </div>
 
     <h3>Where it ran</h3>
-    <p class="ran">Measures on this page: ${esc(ranOn)} Concurrency, restart recovery, lease fencing and roles: Postgres 18.6 server only (5 tests). The Edge Function's HTTP handler: tested under Deno ${esc(String(pglite.runtime).replace("Deno ", ""))}, not in the Supabase Edge runtime, which was not run. Nothing was deployed to Supabase. This page is static and says nothing about the backend.</p>
+    <p class="ran">Measures on this page: ${
+  esc(ranOn)
+} Concurrency, restart recovery, lease fencing, database roles and a whole checkout run as service_role: Postgres 18.6 server only (6 tests). The Edge Function's HTTP handler: tested under Deno ${
+  esc(String(pglite.runtime).replace("Deno ", ""))
+}, not in the Supabase Edge runtime, which was not run. Nothing was deployed to Supabase. This page is static and says nothing about the backend.</p>
 
     <p class="me">I built and tested this work sample. I have not built a production ACH system. It demonstrates the failure-handling approach, not a production payment track record. The next step I would propose is a small paid discovery milestone that ends with a route decision and acceptance criteria, including the possible answer that no route meets the requirement yet.</p>
   </div>
@@ -450,10 +512,14 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 const out = new URL("dist/kiosk-payments/", root);
 await Deno.mkdir(out, { recursive: true });
 await Deno.writeTextFile(new URL("index.html", out), html);
-for (const f of ["favicon.svg", "favicon.png", "apple-touch-icon.png"]) await Deno.copyFile(new URL(f, root), new URL(f, out));
+for (const f of ["favicon.svg", "favicon.png", "apple-touch-icon.png"]) {
+  await Deno.copyFile(new URL(f, root), new URL(f, out));
+}
 await Deno.writeTextFile(
   new URL("dist/_headers", root),
   "/kiosk-payments/*\n  X-Robots-Tag: noindex, nofollow\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: strict-origin-when-cross-origin\n",
 );
 if (html.includes("—")) throw new Error("em dash in page");
-console.log(`built site/dist/kiosk-payments/index.html (${html.length} bytes), server agreement: ${sameOnServer}`);
+console.log(
+  `built site/dist/kiosk-payments/index.html (${html.length} bytes), server agreement: ${sameOnServer}`,
+);

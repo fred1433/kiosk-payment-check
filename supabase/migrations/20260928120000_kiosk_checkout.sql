@@ -171,7 +171,8 @@ create trigger movements_append_only before update or delete on kiosk.money_move
   for each row execute function kiosk.forbid_change();
 
 create function kiosk.log(p_checkout uuid, p_source text, p_type text, p_detail jsonb, p_now timestamptz)
-returns void language sql as $$
+returns void language sql
+security definer set search_path = kiosk, pg_temp as $$
   insert into kiosk.events (checkout_id, source, type, detail, at) values (p_checkout, p_source, p_type, coalesce(p_detail, '{}'::jsonb), p_now);
 $$;
 
@@ -182,7 +183,8 @@ create function kiosk.start_checkout(
   p_store uuid, p_shopper uuid, p_kiosk_request_id text, p_saved_ref uuid,
   p_quoted_total_cents integer, p_fee_cents integer, p_cart jsonb, p_now timestamptz default now())
 returns table (checkout_id uuid, created boolean)
-language plpgsql as $$
+language plpgsql
+security definer set search_path = kiosk, pg_temp as $$
 declare
   v_ref kiosk.saved_bank_refs;
   v_id uuid;
@@ -230,7 +232,8 @@ end $$;
 -- ---------------------------------------------------------------------------------------------
 create function kiosk.claim_next_operation(p_worker text, p_lease_seconds integer, p_now timestamptz default now())
 returns setof kiosk.operations
-language plpgsql as $$
+language plpgsql
+security definer set search_path = kiosk, pg_temp as $$
 declare
   v_op kiosk.operations;
   v_reclaim boolean;
@@ -264,7 +267,8 @@ end $$;
 create function kiosk.finish_operation(
   p_op uuid, p_claim_token uuid, p_decision jsonb, p_now timestamptz default now())
 returns text
-language plpgsql as $$
+language plpgsql
+security definer set search_path = kiosk, pg_temp as $$
 declare
   v_op kiosk.operations;
   v_next jsonb;
@@ -362,7 +366,8 @@ create function kiosk.record_bank_event(
   p_event_id text, p_type text, p_ref text, p_amount_cents integer, p_return_code text,
   p_effective_date date, p_source text, p_now timestamptz default now())
 returns text
-language plpgsql as $$
+language plpgsql
+security definer set search_path = kiosk, pg_temp as $$
 declare
   v_checkout uuid;
   v_inserted integer;
@@ -384,9 +389,15 @@ begin
     v_result := 'consent_revoked';
   elsif p_type = 'preauth.expired' then
     update kiosk.bank_payments set preauth_state = 'expired', updated_at = p_now
-     where preauth_ref = p_ref and preauth_state = 'preauthorized'
+     where preauth_ref = p_ref and preauth_state = 'preauthorized' and capture_state = 'none'
      returning checkout_id into v_checkout;
-    v_result := case when v_checkout is null then 'unknown_reference' else 'recorded' end;
+    if v_checkout is not null then
+      v_result := 'recorded';
+    elsif exists (select 1 from kiosk.bank_payments where preauth_ref = p_ref) then
+      v_result := 'already_known'; -- captured or voided already: the expiry changes nothing
+    else
+      v_result := 'unknown_reference';
+    end if;
   else
     if p_type in ('payment.settled', 'payment.returned') then
       select checkout_id into v_checkout from kiosk.bank_payments where capture_ref = p_ref;
@@ -421,7 +432,13 @@ begin
   end if;
 
   if p_source = 'webhook' then
-    update kiosk.webhook_receipts set result = v_result where provider_event_id = p_event_id;
+    if v_result = 'unknown_reference' then
+      -- Not ours yet (for example the refund reference is written after its settlement notice).
+      -- Forget the receipt so the provider's retry is processed; the caller answers "retry later".
+      delete from kiosk.webhook_receipts where provider_event_id = p_event_id;
+    else
+      update kiosk.webhook_receipts set result = v_result where provider_event_id = p_event_id;
+    end if;
   end if;
   return v_result;
 end $$;
@@ -431,7 +448,8 @@ end $$;
 -- ---------------------------------------------------------------------------------------------
 create function kiosk.request_refund(p_checkout uuid, p_amount_cents integer, p_reason text, p_staff text, p_now timestamptz default now())
 returns boolean
-language plpgsql as $$
+language plpgsql
+security definer set search_path = kiosk, pg_temp as $$
 declare
   v_b kiosk.bank_payments;
   v_inserted integer;
@@ -462,7 +480,8 @@ end $$;
 
 create function kiosk.record_handoff(p_checkout uuid, p_staff text, p_override_reason text, p_now timestamptz default now())
 returns void
-language plpgsql as $$
+language plpgsql
+security definer set search_path = kiosk, pg_temp as $$
 declare
   v_ack text;
 begin
@@ -481,9 +500,10 @@ end $$;
 -- Reconciliation: one row per checkout, amounts and references side by side.
 -- expected_net_cents is what the store should hold if nothing else happens:
 --   goods out and not returned -> the captured amount; otherwise 0.
--- exposure_cents: how much the store is short if nothing else arrives (unsettled or returned).
+-- unsettled_cents: captured, not yet settled or returned: money in flight, not lost.
+-- short_cents: goods released (and not returned) but the settled net is below the capture.
+-- exposure_cents = unsettled_cents + short_cents.
 -- held_for_shopper_cents: money received for goods not released (or returned): owed as goods or refund.
--- ---------------------------------------------------------------------------------------------
 create view kiosk.reconciliation as
 select
   c.id as checkout_id,
@@ -506,6 +526,15 @@ select
   greatest(0,
     (case when h.checkout_id is not null and h.goods_returned_at is null then coalesce(b.capture_amount_cents, 0) else 0 end)
     - (coalesce(m.settled, 0) + coalesce(m.refunded, 0) + coalesce(m.returned, 0))) as exposure_cents,
+  case when b.capture_state = 'accepted' and m.settled is null and m.returned is null
+       and h.checkout_id is not null and h.goods_returned_at is null
+       then coalesce(b.capture_amount_cents, 0) else 0 end as unsettled_cents,
+  greatest(0,
+    (case when h.checkout_id is not null and h.goods_returned_at is null then coalesce(b.capture_amount_cents, 0) else 0 end)
+    - (coalesce(m.settled, 0) + coalesce(m.refunded, 0) + coalesce(m.returned, 0))
+    - (case when b.capture_state = 'accepted' and m.settled is null and m.returned is null
+            and h.checkout_id is not null and h.goods_returned_at is null
+            then coalesce(b.capture_amount_cents, 0) else 0 end)) as short_cents,
   greatest(0,
     (coalesce(m.settled, 0) + coalesce(m.refunded, 0) + coalesce(m.returned, 0))
     - (case when h.checkout_id is not null and h.goods_returned_at is null then coalesce(b.capture_amount_cents, 0) else 0 end)) as held_for_shopper_cents,
@@ -523,17 +552,19 @@ left join lateral (
 ) m on true;
 
 -- ---------------------------------------------------------------------------------------------
--- Access: nothing is readable or callable from the browser roles. The Edge Function calls
--- these functions with the service role after verifying the shopper and the kiosk.
+-- Access. Browser roles (anon, authenticated) can read nothing and call nothing. The Edge
+-- Function connects with a server-side credential and calls the functions as service_role (or as
+-- the database owner). The functions are SECURITY DEFINER with a fixed search_path, so
+-- service_role needs EXECUTE and read access for the snapshot and reconciliation queries only;
+-- every write goes through a function. Tested in tests/postgres_test.ts.
 -- ---------------------------------------------------------------------------------------------
 do $$
 begin
+  execute 'revoke all on all functions in schema kiosk from public';
   if exists (select 1 from pg_roles where rolname = 'anon') then
     execute 'revoke all on schema kiosk from anon, authenticated';
     execute 'revoke all on all tables in schema kiosk from anon, authenticated';
-    execute 'revoke all on all functions in schema kiosk from public, anon, authenticated';
-  else
-    execute 'revoke all on all functions in schema kiosk from public';
+    execute 'revoke all on all functions in schema kiosk from anon, authenticated';
   end if;
   if exists (select 1 from pg_roles where rolname = 'service_role') then
     execute 'grant usage on schema kiosk to service_role';

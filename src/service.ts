@@ -102,67 +102,102 @@ export async function ingestBankWebhook(
     [e.id, e.type, e.ref, e.amountCents, e.returnCode ?? null, e.effectiveDate, clock.now().toISOString()],
   );
   if (r.r === "recorded" && e.type === "payment.returned" && e.returnCode) {
-    await flagLateReturn(sql, clock, e.ref, e.returnCode);
+    await flagLateReturn(sql, clock, e.ref, e.returnCode, e.effectiveDate);
   }
   return r.r;
 }
 
-/** A return that reaches us after the bank's deadline for its code is kept and flagged for review. */
-async function flagLateReturn(sql: Sql, clock: Clock, captureRef: string, code: string) {
+/**
+ * Two different facts about a return, both kept and journaled when they apply:
+ *   the return is dated after the bank's deadline for its code (effective date), or
+ *   its notice reaches us after that deadline (received date).
+ */
+async function flagLateReturn(sql: Sql, clock: Clock, captureRef: string, code: string, effectiveOn: string) {
   const [m] = await sql.query<{ checkout_id: string; settled_on: string }>(
     `select checkout_id, effective_date::text as settled_on from kiosk.money_movements where kind = 'settlement' and provider_ref = $1`,
     [captureRef],
   );
   if (!m) return;
   const received = clock.now().toISOString().slice(0, 10);
-  if (isLateNotice(code, m.settled_on, received)) {
-    await sql.query(`select kiosk.log($1, 'webhook', 'return_after_bank_deadline', $2::text::jsonb, $3)`, [
-      m.checkout_id,
-      JSON.stringify({
-        code,
-        settled_on: m.settled_on,
-        received_on: received,
-        deadlines: returnDeadlines(m.settled_on),
-      }),
-      clock.now().toISOString(),
-    ]);
-  }
+  const returnLate = isLateNotice(code, m.settled_on, effectiveOn);
+  const noticeLate = isLateNotice(code, m.settled_on, received);
+  if (!returnLate && !noticeLate) return;
+  await sql.query(`select kiosk.log($1, 'webhook', $2, $3::text::jsonb, $4)`, [
+    m.checkout_id,
+    returnLate ? "return_dated_after_deadline" : "late_return_notice",
+    JSON.stringify({
+      code,
+      settled_on: m.settled_on,
+      effective_on: effectiveOn,
+      received_on: received,
+      deadlines: returnDeadlines(m.settled_on),
+    }),
+    clock.now().toISOString(),
+  ]);
 }
 
+/** Days after settlement during which a consumer debit can still come back (R05, R07, R10, R11). */
+export const RETURN_WATCH_DAYS = 60;
+
 /**
- * Reconciliation for missing webhooks: ask the provider about every accepted capture that has
- * no settlement or return recorded yet. Same unique keys as webhooks, so a late webhook after a
- * poll inserts nothing.
+ * Reconciliation for missing webhooks. Reads the bank for:
+ *   every accepted capture with no settlement or return recorded, and every settled capture
+ *   still inside the consumer return window (a lost R10 notice would otherwise stay invisible);
+ *   every accepted refund with no settlement recorded.
+ * Same unique keys as webhooks, so a late webhook after a poll inserts nothing. Returns the
+ * number of new facts recorded.
  */
 export async function pollUnsettledCaptures(sql: Sql, clock: Clock, bank: BankAdapter): Promise<number> {
-  const rows = await sql.query<{ capture_ref: string }>(
+  const today = clock.now().toISOString().slice(0, 10);
+  const captures = await sql.query<{ capture_ref: string }>(
     `select b.capture_ref from kiosk.bank_payments b
       where b.capture_state = 'accepted'
-        and not exists (select 1 from kiosk.money_movements m where m.provider_ref = b.capture_ref and m.kind in ('settlement','return'))`,
+        and not exists (select 1 from kiosk.money_movements m where m.provider_ref = b.capture_ref and m.kind = 'return')
+        and not exists (select 1 from kiosk.money_movements m where m.provider_ref = b.capture_ref and m.kind = 'settlement'
+                         and m.effective_date + $1::int < $2::text::date)`,
+    [RETURN_WATCH_DAYS, today],
   );
   let recorded = 0;
-  for (const { capture_ref } of rows) {
+  const now = clock.now().toISOString();
+  const rec = async (type: string, ref: string, amount: number, code: string | null, on: string) => {
+    const [x] = await sql.query<{ r: string }>(
+      `select kiosk.record_bank_event(null, $1, $2, $3, $4, $5::text::date, 'poll', $6) as r`,
+      [type, ref, amount, code, on, now],
+    );
+    if (x.r === "recorded") recorded++;
+    return x.r;
+  };
+  for (const { capture_ref } of captures) {
     const r = await bank.getPayment(capture_ref);
     if (r.kind !== "ok") continue;
     const v = r.value;
-    const now = clock.now().toISOString();
     if (v.status === "settled" || (v.status === "returned" && v.settledOn)) {
-      await sql.query(
-        `select kiosk.record_bank_event(null, 'payment.settled', $1, $2, null, $3::text::date, 'poll', $4)`,
-        [capture_ref, v.amountCents, v.settledOn, now],
-      );
-      recorded++;
+      await rec("payment.settled", capture_ref, v.amountCents, null, v.settledOn!);
     }
     if (v.status === "returned") {
-      await sql.query(
-        `select kiosk.record_bank_event(null, 'payment.returned', $1, $2, $3, $4::text::date, 'poll', $5)`,
-        [capture_ref, v.amountCents, v.returnCode, v.returnedOn, now],
-      );
-      recorded++;
+      if (
+        (await rec("payment.returned", capture_ref, v.amountCents, v.returnCode, v.returnedOn)) === "recorded"
+      ) {
+        await flagLateReturn(sql, clock, capture_ref, v.returnCode, v.returnedOn);
+      }
+    }
+  }
+  const refunds = await sql.query<{ refund_ref: string }>(
+    `select b.refund_ref from kiosk.bank_payments b
+      where b.refund_state = 'accepted'
+        and not exists (select 1 from kiosk.money_movements m where m.provider_ref = b.refund_ref and m.kind = 'refund')`,
+  );
+  for (const { refund_ref } of refunds) {
+    const r = await bank.getRefund(refund_ref);
+    if (r.kind === "ok" && r.value.status === "settled") {
+      await rec("refund.settled", refund_ref, r.value.amountCents, null, r.value.settledOn!);
     }
   }
   return recorded;
 }
+
+/** Same reconciliation, under the name the scheduler uses. */
+export const reconcileWithBank = pollUnsettledCaptures;
 
 export async function requestRefund(
   sql: Sql,
@@ -222,6 +257,8 @@ export interface ReconRow {
   expected_net_cents: number;
   exposure_cents: number;
   held_for_shopper_cents: number;
+  unsettled_cents: number;
+  short_cents: number;
   open_investigations: number;
 }
 
@@ -238,6 +275,8 @@ export async function reconciliation(sql: Sql, checkoutId: string): Promise<Reco
       "expected_net_cents",
       "exposure_cents",
       "held_for_shopper_cents",
+      "unsettled_cents",
+      "short_cents",
       "open_investigations",
     ] as const
   ) {

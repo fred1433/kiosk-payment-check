@@ -42,6 +42,7 @@ interface Refund {
   paymentRef: string;
   amountCents: number;
   status: "pending" | "settled";
+  settledOn?: string;
 }
 
 export class BankSimulator implements BankAdapter {
@@ -164,6 +165,17 @@ export class BankSimulator implements BankAdapter {
     });
   }
 
+  getRefund(
+    refundRef: string,
+  ): Promise<Call<{ status: "pending" | "settled"; amountCents: number; settledOn?: string }>> {
+    const r = this.refunds.get(refundRef);
+    if (!r) return Promise.resolve({ kind: "rejected", reason: "unknown refund" });
+    return Promise.resolve({
+      kind: "ok",
+      value: { status: r.status, amountCents: r.amountCents, settledOn: r.settledOn },
+    });
+  }
+
   getPayment(paymentRef: string): Promise<Call<BankPaymentStatus>> {
     this.calls.get++;
     const f = this.#fault("get");
@@ -221,6 +233,7 @@ export class BankSimulator implements BankAdapter {
     for (const r of this.refunds.values()) {
       if (r.status !== "pending") continue;
       r.status = "settled";
+      r.settledOn = on;
       this.ledger.push({ kind: "refund", ref: r.ref, amountCents: -r.amountCents, on });
       this.#emit({ type: "refund.settled", ref: r.ref, amountCents: r.amountCents, effectiveDate: on });
     }

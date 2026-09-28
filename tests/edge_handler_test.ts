@@ -14,6 +14,7 @@ Deno.test("edge handler: checkout, tick, status, signed webhook, forged webhook"
     webhookSecret: WEBHOOK_SECRET,
     signatureHeader: "x-bank-signature",
     tickSecret: "tick",
+    feeCents: FEE_CENTS,
     authenticateShopper: (req) =>
       Promise.resolve(req.headers.get("authorization") === "Bearer shopper-a" ? SHOPPER : null),
   });
@@ -23,7 +24,7 @@ Deno.test("edge handler: checkout, tick, status, signed webhook, forged webhook"
     kiosk_request_id: "kiosk-7-tap-000184",
     saved_ref_id: w.savedRefId,
     quoted_total_cents: QUOTE_CENTS,
-    fee_cents: FEE_CENTS,
+    fee_cents: 0, // a kiosk that tries to skip the fee
     cart: CART,
   });
   assertEquals((await h(new Request(`${base}/checkout`, { method: "POST", body }))).status, 401);
@@ -35,6 +36,11 @@ Deno.test("edge handler: checkout, tick, status, signed webhook, forged webhook"
   );
   assertEquals([r1.status, r2.status], [201, 200]);
   const { checkout_id } = await r1.json();
+  const [fee] = await w.sql.query<{ fee_cents: number }>(
+    `select fee_cents from kiosk.checkouts where id = $1`,
+    [checkout_id],
+  );
+  assertEquals(fee.fee_cents, FEE_CENTS); // the server's fee, not the client's 0
   await r2.body?.cancel();
   for (let i = 0; i < 12; i++) {
     const t = await h(
@@ -70,5 +76,40 @@ Deno.test("edge handler: checkout, tick, status, signed webhook, forged webhook"
   assertEquals([dup.status, (await dup.json()).result], [200, "duplicate_event"]);
   assertEquals(forged.status, 401);
   await forged.body?.cancel();
+  await w.close();
+});
+
+Deno.test("edge handler: a webhook for a reference we have not written yet is refused for retry, not swallowed", async () => {
+  const w = await makeWorld();
+  const h = makeHandler({
+    sql: w.sql,
+    clock: w.clock,
+    bank: w.bank,
+    pos: w.pos,
+    webhookSecret: WEBHOOK_SECRET,
+    signatureHeader: "x-bank-signature",
+    tickSecret: "tick",
+    feeCents: FEE_CENTS,
+    authenticateShopper: () => Promise.resolve(null),
+  });
+  const raw = JSON.stringify({
+    id: "evt_early",
+    type: "refund.settled",
+    ref: "rf_9999",
+    amountCents: 9750,
+    effectiveDate: "2026-09-30",
+  });
+  const sig = await signWebhook(WEBHOOK_SECRET, raw, Math.floor(w.clock.now().getTime() / 1000));
+  const req = () =>
+    new Request("http://localhost/kiosk-checkout/webhooks/bank", {
+      method: "POST",
+      body: raw,
+      headers: { "x-bank-signature": sig },
+    });
+  const a = await h(req());
+  const b = await h(req());
+  assertEquals([a.status, b.status], [503, 503]); // the retry is processed again, not deduplicated away
+  await a.body?.cancel();
+  await b.body?.cancel();
   await w.close();
 });

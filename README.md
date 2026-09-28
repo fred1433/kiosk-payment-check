@@ -22,7 +22,8 @@ deno task bench       # same bench, writes site/data/bench.json (measures per se
 Concurrency, restart recovery, lease fencing and database roles need a real Postgres server:
 
 ```sh
-./scripts/test-postgres.sh                      # throwaway local server (needs initdb/pg_ctl)
+./scripts/test-postgres.sh                      # throwaway local server (needs initdb/pg_ctl);
+                                                # it also reruns the bench, rewriting site/data/bench*.json
 # or, against any server where you can create databases, e.g. `supabase start`:
 psql "$DATABASE_URL" -f scripts/supabase-roles.sql   # only on a plain server
 DATABASE_URL=postgres://... deno task test:pg
@@ -31,6 +32,13 @@ DATABASE_URL=postgres://... deno task test:pg
 What ran where for the published results: see "Where it ran" on the page, or
 `site/data/bench.json` and `site/data/bench.postgres.json`.
 
+## Deploying the Edge Function (not done here)
+
+Set `KIOSK_DB_URL` to a server-side connection for a role with EXECUTE on the kiosk functions
+(`service_role` in Supabase; the functions are SECURITY DEFINER, and browser roles get nothing),
+`KIOSK_FEE_CENTS` for the disclosed fee (never taken from the kiosk request), `BANK_WEBHOOK_SECRET`,
+`KIOSK_TICK_SECRET`. Without `KIOSK_SIMULATION=1` it refuses to start: there is no real adapter.
+
 ## Layout
 
 ```
@@ -38,7 +46,7 @@ supabase/migrations/   schema, SQL functions (claim, finish, bank events, staff 
 supabase/functions/    Edge Function entry (serves the simulators only, refuses to start otherwise)
 src/workflow.ts        every decision as one pure function
 src/worker.ts          claim -> call outside any transaction -> record with the claim token
-src/service.ts         checkout, webhooks, polling for missing webhooks, refunds, handoff
+src/service.ts         checkout, webhooks, reconciler reading the bank (captures for 60 days, refunds), refunds, handoff
 src/adapters/          ports, Cova-shaped POS simulator, bank simulator
 src/naive.ts           the naive baseline
 bench/                 the failure families, the order-of-operations comparison, the page's timeline

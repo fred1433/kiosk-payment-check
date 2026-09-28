@@ -15,7 +15,7 @@ import {
   recordHandoff,
   requestRefund,
 } from "../src/service.ts";
-import { WorkerCrash } from "../src/worker.ts";
+import { runOnce, WorkerCrash } from "../src/worker.ts";
 import type { OperationRow } from "../src/workflow.ts";
 import type { LedgerLine } from "../src/adapters/bank_sim.ts";
 import { naiveCheckout, naiveWebhook, newNaiveDb } from "../src/naive.ts";
@@ -35,6 +35,9 @@ export interface Measures {
   bankNetCents: number;
   recordedNetCents?: number; // what the system under test believes
   exposureCents?: number;
+  unsettledCents?: number;
+  shortCents?: number;
+  counterPayments: number; // payments taken at the register counter, outside the module
   outcome: string;
   reason?: string | null;
   openInvestigations?: number;
@@ -85,6 +88,9 @@ async function measure(w: World, checkoutId: string | null, submissions: number)
     bankNetCents: w.bank.netCents(),
     recordedNetCents: rec?.net_cash_cents,
     exposureCents: rec?.exposure_cents,
+    unsettledCents: rec?.unsettled_cents,
+    shortCents: rec?.short_cents,
+    counterPayments: w.pos.counterPayments(),
     outcome: rec?.outcome ?? "refused",
     reason: rec?.outcome_reason,
     openInvestigations: rec?.open_investigations,
@@ -94,7 +100,13 @@ async function measure(w: World, checkoutId: string | null, submissions: number)
 /** Runs the naive baseline against fresh simulators configured the same way. */
 async function naive(
   setup: (bank: BankSimulator, pos: CovaSimulator) => void,
-  opts: { pos?: CovaSimOptions; submissions?: number; savedRefId?: string; webhooks?: "duplicate" } = {},
+  opts: {
+    pos?: CovaSimOptions;
+    submissions?: number;
+    savedRefId?: string;
+    webhooks?: "duplicate";
+    during?: (bank: BankSimulator, pos: CovaSimulator) => void;
+  } = {},
 ): Promise<Measures & { belief: string }> {
   const bank = new BankSimulator({ idempotencyKeys: true });
   const pos = new CovaSimulator({ taxRate: 0.2, ...opts.pos });
@@ -111,6 +123,7 @@ async function naive(
       amountCents: QUOTE_CENTS + FEE_CENTS,
     });
   }
+  opts.during?.(bank, pos);
   if (opts.webhooks) {
     bank.settleAllPending("2026-09-29");
     for (const e of bank.takeEvents()) {
@@ -124,6 +137,7 @@ async function naive(
     orders: pos.ordersCreated(),
     registerPaid: pos.registerShowsPaid() ? "yes" : "no",
     paymentsAppliedAtRegister: pos.paymentsApplied(),
+    counterPayments: pos.counterPayments(),
     movements: [...bank.ledger],
     bankNetCents: bank.netCents(),
     recordedNetCents: opts.webhooks ? db.paidCents : undefined,
@@ -279,7 +293,7 @@ export const FAMILIES: Family[] = [
   {
     id: "webhooks",
     title: "Duplicate, missing, reordered and invalid webhooks",
-    demonstrates: "Invalid input rejected; repeats do not repeat effects; missing events are reconciled.",
+    demonstrates: "Invalid input rejected; repeats do not repeat effects; a lost notice is found by reading the bank, for 60 days after settlement.",
     sequences: () => [
       seq("webhooks", "3a", "Every webhook delivered twice", "Settlement recorded once", async (o) => {
         const w = await makeWorld(o);
@@ -393,6 +407,37 @@ export const FAMILIES: Family[] = [
               m.recordedNetCents === 0,
             resolved: true,
             notes: [`forged: ${forged}, tampered: ${tampered}, stale: ${stale}, unsigned: ${unsigned}.`],
+          };
+        },
+      ),
+      seq(
+        "webhooks",
+        "3e",
+        "Goods handed over; an R10 comes back on day 20 and its notice is lost",
+        "The reconciler keeps reading the bank for 60 days and finds it",
+        async (o) => {
+          const w = await makeWorld(o);
+          const r = await w.checkout();
+          const id = r.ok ? r.checkoutId : "";
+          await w.run();
+          await recordHandoff(w.sql, w.clock, id, "budtender-3", null);
+          const ref = [...w.bank.payments.keys()][0];
+          w.bank.settle(ref, "2026-09-29");
+          await w.deliver();
+          w.clock.advanceDays(20);
+          w.bank.returnDebit(ref, "R10", "2026-10-18");
+          await w.deliver({ drop: () => true });
+          const polled = await pollUnsettledCaptures(w.sql, w.clock, w.bank);
+          const m = await measure(w, id, 1);
+          await w.close();
+          return {
+            module: m,
+            pass: polled === 1 && m.recordedNetCents === m.bankNetCents && m.shortCents === CHARGE &&
+              m.outcome === "needs_staff",
+            resolved: false,
+            notes: [
+              "Settled captures stay on the reconciler's list until 60 days after settlement, the consumer return window for R05, R07, R10 and R11.",
+            ],
           };
         },
       ),
@@ -586,6 +631,34 @@ export const FAMILIES: Family[] = [
           };
         },
       ),
+      seq(
+        "register-not-acknowledged",
+        "5d",
+        "Bank capture accepted, and meanwhile the cashier takes cash and records it at the register",
+        "Not marked paid: possible double collection, a person checks",
+        async (o) => {
+          const w = await makeWorld(o);
+          const r = await w.checkout();
+          await w.run({
+            afterCall: (op) => {
+              if (op.kind === "bank_capture") w.pos.cashierTakesCashAndRecords([...w.pos.orders.keys()][0]);
+            },
+          });
+          const m = await measure(w, r.ok ? r.checkoutId : null, 1);
+          await w.close();
+          return {
+            module: m,
+            naive: await naive(() => {}, {
+              during: (_b, pos) => pos.cashierTakesCashAndRecords([...pos.orders.keys()][0]),
+            }),
+            pass: m.debits === 1 && m.counterPayments === 1 && m.outcome === "needs_staff",
+            resolved: false,
+            notes: [
+              "Our payment record is refused because the order is already paid; the register's status alone would say paid. The module reads the refusal as a warning, not as success.",
+            ],
+          };
+        },
+      ),
     ],
   },
   {
@@ -730,8 +803,8 @@ export const FAMILIES: Family[] = [
       seq(
         "refund-vs-return",
         "7d",
-        "An R01 return notice reaches us six days after settlement, after the 2-banking-day window",
-        "Recorded anyway, flagged as a late notice",
+        "An R01 return dated on its deadline, whose notice reaches us four days later",
+        "Recorded; flagged as a late notice, not as a late return",
         async (o) => {
           const w = await makeWorld(o);
           const r = await w.checkout();
@@ -744,18 +817,19 @@ export const FAMILIES: Family[] = [
           w.bank.returnDebit(ref, "R01", "2026-10-01");
           await w.deliver();
           const ev = await events(w.sql, id);
-          const flagged = ev.find((e) => e.type === "return_after_bank_deadline");
+          const flagged = ev.find((e) => e.type === "late_return_notice");
+          const wrong = ev.find((e) => e.type === "return_dated_after_deadline");
           const m = await measure(w, id, 1);
           await w.close();
           return {
             module: m,
-            pass: !!flagged && m.recordedNetCents === 0,
+            pass: !!flagged && !wrong && m.recordedNetCents === 0,
             resolved: false,
             notes: [
               `Deadline for R01 after a 2026-09-29 settlement: ${
                 (flagged?.detail as { deadlines?: { administrative?: string } })?.deadlines?.administrative ??
                   "?"
-              }. The bank deadline is not the date our webhook arrives; the fact is kept either way.`,
+              }; the return is dated 2026-10-01, the notice arrived 2026-10-05. A late notice and a late return are different facts; both would be kept.`,
             ],
           };
         },
@@ -807,6 +881,48 @@ export const FAMILIES: Family[] = [
             pass: a.ok && a.created && b.ok && !b.created && w.bank.refunds.size === 1,
             resolved: true,
             notes: ["Partial and multiple refunds are outside this slice."],
+          };
+        },
+      ),
+      seq(
+        "refund-vs-return",
+        "7e",
+        "Refund accepted, worker dies, the refund settles and its notice arrives before we wrote the reference",
+        "Notice refused for retry, not swallowed; the refund is recorded",
+        async (o) => {
+          const w = await makeWorld(o);
+          const r = await w.checkout();
+          const id = r.ok ? r.checkoutId : "";
+          await w.run();
+          w.bank.settle([...w.bank.payments.keys()][0], "2026-09-29");
+          await w.deliver();
+          await requestRefund(w.sql, w.clock, id, CHARGE, "goods_returned", "manager-1");
+          try {
+            await runOnce(w.worker("w1", {
+              afterCall: (op) => {
+                if (op.kind === "bank_refund") throw new WorkerCrash("died");
+              },
+            }));
+          } catch (e) {
+            if (!(e instanceof WorkerCrash)) throw e;
+          }
+          w.bank.settleRefunds("2026-09-30");
+          const early = await w.deliver();
+          await w.run();
+          await pollUnsettledCaptures(w.sql, w.clock, w.bank);
+          const m = await measure(w, id, 1);
+          const rec = await reconciliation(w.sql, id);
+          await w.close();
+          return {
+            module: m,
+            pass: early.includes("unknown_reference") && rec.refunded_cents === -CHARGE &&
+              m.recordedNetCents === m.bankNetCents && w.bank.refunds.size === 1,
+            resolved: true,
+            notes: [
+              `Early notice: ${
+                early.join(", ")
+              } (the HTTP handler answers 503 so the provider retries); the reconciler also reads accepted refunds.`,
+            ],
           };
         },
       ),

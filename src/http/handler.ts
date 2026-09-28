@@ -25,6 +25,8 @@ export interface HandlerDeps {
   signatureHeader: string; // header name, to confirm with the provider
   /** Returns the shopper id from the platform's existing session, or null. */
   authenticateShopper: (req: Request) => Promise<string | null>;
+  /** The disclosed fee, set on the server. A fee sent by the kiosk is ignored. */
+  feeCents: number;
   /** Shared secret for the scheduler calling /worker/tick. */
   tickSecret: string;
   budgetMs?: number;
@@ -49,7 +51,7 @@ export function makeHandler(d: HandlerDeps) {
       }
       const ok = typeof b.store_id === "string" && typeof b.kiosk_request_id === "string" &&
         typeof b.saved_ref_id === "string" &&
-        Number.isInteger(b.quoted_total_cents) && Number.isInteger(b.fee_cents) && Array.isArray(b.cart);
+        Number.isInteger(b.quoted_total_cents) && Array.isArray(b.cart);
       if (!ok) return json(400, { error: "invalid_body" });
       const r = await startCheckout(d.sql, d.clock, {
         storeId: b.store_id as string,
@@ -57,7 +59,7 @@ export function makeHandler(d: HandlerDeps) {
         kioskRequestId: b.kiosk_request_id as string,
         savedRefId: b.saved_ref_id as string,
         quotedTotalCents: b.quoted_total_cents as number,
-        feeCents: b.fee_cents as number,
+        feeCents: d.feeCents,
         cart: b.cart as never,
       });
       if (!r.ok) return json(r.error === "reauthentication_required" ? 409 : 403, { error: r.error });
@@ -91,7 +93,10 @@ export function makeHandler(d: HandlerDeps) {
       });
       if (r === "rejected_signature") return json(401, { error: r });
       if (r === "rejected_body") return json(400, { error: r });
-      return json(200, { result: r }); // duplicates and unknown references are acknowledged, not retried
+      // Not ours yet (for example a refund whose reference is still being written): ask the
+      // provider to retry, and the reconciler reads the bank as well.
+      if (r === "unknown_reference") return json(503, { error: "retry_later" });
+      return json(200, { result: r }); // duplicates are acknowledged, not reprocessed
     }
 
     if (req.method === "POST" && path === "/worker/tick") {

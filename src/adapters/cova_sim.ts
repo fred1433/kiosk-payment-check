@@ -1,6 +1,6 @@
 // Contract-shaped simulator of Cova's Sales Order API, not a certified integration.
 //
-// What it follows, from Cova's public documentation (read 28 Sep 2026, links in docs/sources.md):
+// What it follows, from Cova's public documentation (read 28 Sep 2026, links in docs/discovery-note.md and docs/sources.md):
 //   * The integrator generates the order GUID and sends it in the URL of PUT .../TEPCovaOrder({id}).
 //   * The PUT returns 202 without validating; GET .../CovaOrder({id})/Status is the source of truth
 //     (ReadyForPayment with saleTotal, or TransientProcessingFailure / NonTransientProcessingFailure).
@@ -195,12 +195,24 @@ export class CovaSimulator implements PosAdapter {
     return false;
   }
 
+  /** The cashier takes cash for the order and records it at the register. */
+  cashierTakesCashAndRecords(posOrderId: string) {
+    const o = this.orders.get(posOrderId);
+    if (!o || o.paymentStatus === "PaymentApplied") return;
+    o.counterCollections++;
+    o.paymentStatus = "PaymentApplied";
+    o.paymentsApplied.push({ amountCents: o.saleTotalCents, paymentRef: "cash-drawer" });
+  }
+
   // ---- ground truth for the bench ----
   ordersCreated() {
     return this.orders.size;
   }
   registerShowsPaid(): boolean {
     return [...this.orders.values()].some((o) => o.paymentStatus === "PaymentApplied");
+  }
+  counterPayments() {
+    return [...this.orders.values()].reduce((a, o) => a + o.counterCollections, 0);
   }
   paymentsApplied() {
     return [...this.orders.values()].reduce((a, o) => a + o.paymentsApplied.length, 0);

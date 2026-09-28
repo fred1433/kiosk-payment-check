@@ -36,6 +36,9 @@ export interface BankAdapter {
     Call<{ refundRef: string }>
   >;
   getPayment(paymentRef: string): Promise<Call<BankPaymentStatus>>;
+  getRefund(
+    refundRef: string,
+  ): Promise<Call<{ status: "pending" | "settled"; amountCents: number; settledOn?: string }>>;
 }
 
 // ------------------------------------------------------------------------------------------

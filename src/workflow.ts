@@ -468,6 +468,22 @@ function decideCheckPayment(op: OperationRow, call: Call<unknown>, s: Snapshot, 
   }
   switch (st.paymentStatus) {
     case "PaymentApplied":
+      if (op.input.after_rejection) {
+        // Our payment record was refused, yet the register shows the order paid: someone else
+        // recorded a payment (for example cash at the counter) while the bank also took the money.
+        return {
+          op_state: "needs_investigation",
+          outcome: "register_paid_by_someone_else",
+          ack: {
+            ack_state: "cannot_be_applied",
+            raw_status: `PaymentApplied, not ours (${op.input.after_rejection})`,
+          },
+          checkout_outcome: "needs_staff",
+          checkout_reason: `The register shows a payment we did not record, and the bank also took ${
+            usd(s.captureAmountCents)
+          } (${s.captureRef}). Possible double collection: check how the register was paid before handing over or refunding.`,
+        };
+      }
       return {
         op_state: "done",
         outcome: "applied",

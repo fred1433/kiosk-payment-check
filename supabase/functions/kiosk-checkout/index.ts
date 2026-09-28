@@ -27,14 +27,19 @@ const supabaseUrl = env("SUPABASE_URL");
 const anonKey = env("SUPABASE_ANON_KEY");
 
 Deno.serve(makeHandler({
-  sql: openPostgres(env("SUPABASE_DB_URL"), 3),
+  // Connect with a server-side credential for a role that has EXECUTE on the kiosk functions
+  // (service_role, see the migration's Access section); never with a browser role.
+  sql: openPostgres(env("KIOSK_DB_URL"), 3),
   clock: systemClock,
   bank: new BankSimulator(),
   pos: new CovaSimulator(),
   webhookSecret: env("BANK_WEBHOOK_SECRET"),
   signatureHeader: "x-bank-signature",
   tickSecret: env("KIOSK_TICK_SECRET"),
-  // Shopper identity from the platform's existing Supabase Auth session. Endpoint to verify   // the platform's setup before use.
+  // The disclosed fee is server configuration, never taken from the kiosk request.
+  feeCents: Number(env("KIOSK_FEE_CENTS")),
+  // Shopper identity from the platform's existing Supabase Auth session. Endpoint to verify
+  // against the platform's setup before use.
   authenticateShopper: async (req) => {
     const auth = req.headers.get("authorization");
     if (!auth) return null;

@@ -107,6 +107,7 @@ table{border-collapse:collapse;width:100%}
 .end.amber{color:var(--amber)}
 tr.red td.seq{box-shadow:inset 3px 0 0 var(--red);padding-left:12px}
 .exp{display:block;color:var(--red);font-size:13px}
+.exp.amber{color:var(--amber)}
 .mv{font-family:var(--receipt);font-size:13.5px}
 .mv.neg{color:var(--red)}
 
@@ -197,7 +198,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 <figure class="receipt-wrap" aria-label="One fictional kiosk order, event by event">
   <div class="paper main">
     <p class="rc-center">STORE 1042 &nbsp; KIOSK 7 &nbsp; QUICK CHECKOUT</p>
-    <p class="rc-center dim">28 SEP 2026 &nbsp; 12:02 PM &nbsp; ORDER 12F3AC6C</p>
+    <p class="rc-center dim">28 SEP 2026 &nbsp; 12:02 PM &nbsp; ORDER B311E8C8</p>
     <p class="rule" aria-hidden="true"></p>
     <ul class="items">
       <li><span>Flower, 3.5 g</span><span>40.00</span></li>
@@ -238,7 +239,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 <section class="band" aria-labelledby="bench-h">
   <div class="wrap">
     <h2 id="bench-h">Every failure replayed, measured separately</h2>
-    <p class="intro">28 sequences in eight families, each on a fresh database against simulated bank and register services. The counts are what the simulated bank and register actually did, not what the code believes. 9 sequences end with a person deciding: for them, stopping is the correct result.</p>
+    <p class="intro">31 sequences in eight families, each on a fresh database against simulated bank and register services. The counts are what the simulated bank and register actually did, not what the code believes. 11 sequences end with a person deciding: for them, stopping is the correct result.</p>
     <p class="intro">A naive version runs against the same faults: debit first, then the order, and a fresh key and a fresh order id on every retry. It passes a happy-path demo; its results sit under each sequence it applies to. As a check on the bench itself, changing the module to send a fresh key on retry turns three sequences red.</p>
     <p class="boundary">The tests verify this module against the stated simulated contracts. They do not certify provider behavior or prevent independent cashier actions. The register side is a contract-shaped simulator of Cova's public Sales Order API, not a certified integration.</p>
     <table class="bench">
@@ -293,7 +294,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
     </tr>
   </tbody>
   <tbody class="fam">
-    <tr class="fam-h"><th colspan="7" scope="rowgroup"><button type="button" class="fam-toggle" aria-expanded="true"><span class="fn">3</span> Duplicate, missing, reordered and invalid webhooks<span class="dem">Invalid input rejected; repeats do not repeat effects; missing events are reconciled.</span><span class="tally">4 sequences: 3 recovered, 1 person decides</span></button></th></tr>
+    <tr class="fam-h"><th colspan="7" scope="rowgroup"><button type="button" class="fam-toggle" aria-expanded="true"><span class="fn">3</span> Duplicate, missing, reordered and invalid webhooks<span class="dem">Invalid input rejected; repeats do not repeat effects; a lost notice is found by reading the bank, for 60 days after settlement.</span><span class="tally">5 sequences: 3 recovered, 2 person decides</span></button></th></tr>
     <tr class="">
       <td class="seq" data-l=""><span class="sid">3a</span> Every webhook delivered twice<p class="naive">Naive baseline, same fault: 1 debit, 1 order, register unpaid, books $195.00 for $97.50 received; it reports “completed”.</p><p class="mline"><span class="end ">Recovered</span><br>1 submission, 1 debit, 1 order, register paid, +97.50</p></td>
       <td class="num" data-l="Kiosk submissions">1</td>
@@ -303,7 +304,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
       <td class="num" data-l="Money settled"><span class="mv ">+97.50</span></td>
       <td class="num" data-l="Ending"><span class="end ">Recovered</span></td>
     </tr><tr class="red">
-      <td class="seq" data-l=""><span class="sid">3b</span> Return notice arrives before the settlement notice<p class="reason red">Bank returned the debit (R01). Money was taken back from the store.</p><p class="mline"><span class="end red">Person decides</span><span class="exp"> store short $97.50</span><br>1 submission, 1 debit, 1 order, register paid, +97.50 -97.50 R01</p></td>
+      <td class="seq" data-l=""><span class="sid">3b</span> Return notice arrives before the settlement notice<p class="reason red">Bank returned the debit (R01). Money was taken back from the store.</p><p class="mline"><span class="end red">Person decides</span><span class="exp">store short $97.50</span><br>1 submission, 1 debit, 1 order, register paid, +97.50 -97.50 R01</p></td>
       <td class="num" data-l="Kiosk submissions">1</td>
       <td class="num" data-l="Debits the bank took">1</td>
       <td class="num" data-l="Orders at the register">1</td>
@@ -326,6 +327,14 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
       <td class="num" data-l="Register shows paid">yes</td>
       <td class="num" data-l="Money settled"><span class="dim">none settled</span></td>
       <td class="num" data-l="Ending"><span class="end ">Recovered</span></td>
+    </tr><tr class="red">
+      <td class="seq" data-l=""><span class="sid">3e</span> Goods handed over; an R10 comes back on day 20 and its notice is lost<p class="reason red">Bank returned the debit (R10). Money was taken back from the store.</p><p class="mline"><span class="end red">Person decides</span><span class="exp">store short $97.50</span><br>1 submission, 1 debit, 1 order, register paid, +97.50 -97.50 R10</p></td>
+      <td class="num" data-l="Kiosk submissions">1</td>
+      <td class="num" data-l="Debits the bank took">1</td>
+      <td class="num" data-l="Orders at the register">1</td>
+      <td class="num" data-l="Register shows paid">yes</td>
+      <td class="num" data-l="Money settled"><span class="mv ">+97.50</span> <span class="mv neg">-97.50 R10</span></td>
+      <td class="num" data-l="Ending"><span class="end red">Person decides</span><span class="exp">store short $97.50</span></td>
     </tr>
   </tbody>
   <tbody class="fam">
@@ -347,7 +356,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
       <td class="num" data-l="Money settled"><span class="dim">none settled</span></td>
       <td class="num" data-l="Ending"><span class="end ">Recovered</span></td>
     </tr><tr class="red">
-      <td class="seq" data-l=""><span class="sid">4c</span> Register never confirms the order<p class="reason red">The register has not confirmed order afd884f8 after 5 minutes. Nothing was captured.</p><p class="mline"><span class="end red">Person decides</span><br>1 submission, 0 debits, 1 order, register unpaid, none settled</p></td>
+      <td class="seq" data-l=""><span class="sid">4c</span> Register never confirms the order<p class="reason red">The register has not confirmed order e6a8bb2c after 5 minutes. Nothing was captured.</p><p class="mline"><span class="end red">Person decides</span><br>1 submission, 0 debits, 1 order, register unpaid, none settled</p></td>
       <td class="num" data-l="Kiosk submissions">1</td>
       <td class="num" data-l="Debits the bank took">0</td>
       <td class="num" data-l="Orders at the register">1</td>
@@ -365,7 +374,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
     </tr>
   </tbody>
   <tbody class="fam">
-    <tr class="fam-h"><th colspan="7" scope="rowgroup"><button type="button" class="fam-toggle" aria-expanded="true"><span class="fn">5</span> Order exists, register does not show it paid<span class="dem">A visible mismatch, not a green completed result.</span><span class="tally">3 sequences: 2 person decides, 1 recovered</span></button></th></tr>
+    <tr class="fam-h"><th colspan="7" scope="rowgroup"><button type="button" class="fam-toggle" aria-expanded="true"><span class="fn">5</span> Order exists, register does not show it paid<span class="dem">A visible mismatch, not a green completed result.</span><span class="tally">4 sequences: 3 person decides, 1 recovered</span></button></th></tr>
     <tr class="red">
       <td class="seq" data-l=""><span class="sid">5a</span> Register refuses the payment record<p class="reason red">Paid by bank ($97.50, pay_0002). The register does not show the payment (status: PaymentCannotBeApplied: Payment type not configured for this location). Do not collect again at the counter.</p><p class="note">The naive baseline never records payment at the register at all.</p><p class="naive">Naive baseline, same fault: 1 debit, 1 order, register unpaid; it reports “completed”.</p><p class="mline"><span class="end red">Person decides</span><br>1 submission, 1 debit, 1 order, register unpaid, none settled</p></td>
       <td class="num" data-l="Kiosk submissions">1</td>
@@ -383,13 +392,21 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
       <td class="num" data-l="Money settled"><span class="dim">none settled</span></td>
       <td class="num" data-l="Ending"><span class="end ">Recovered</span></td>
     </tr><tr class="red">
-      <td class="seq" data-l=""><span class="sid">5c</span> Staff try to hand over before the register shows payment<p class="reason red">Paid by bank ($97.50, pay_0002). The register does not show the payment (status: PaymentCannotBeApplied: Payment type not configured for this location). Do not collect again at the counter.</p><p class="mline"><span class="end red">Person decides</span><span class="exp"> store short $97.50</span><br>1 submission, 1 debit, 1 order, register unpaid, none settled</p></td>
+      <td class="seq" data-l=""><span class="sid">5c</span> Staff try to hand over before the register shows payment<p class="reason red">Paid by bank ($97.50, pay_0002). The register does not show the payment (status: PaymentCannotBeApplied: Payment type not configured for this location). Do not collect again at the counter.</p><p class="mline"><span class="end red">Person decides</span><span class="exp amber">awaiting settlement $97.50</span><br>1 submission, 1 debit, 1 order, register unpaid, none settled</p></td>
       <td class="num" data-l="Kiosk submissions">1</td>
       <td class="num" data-l="Debits the bank took">1</td>
       <td class="num" data-l="Orders at the register">1</td>
       <td class="num" data-l="Register shows paid">no</td>
       <td class="num" data-l="Money settled"><span class="dim">none settled</span></td>
-      <td class="num" data-l="Ending"><span class="end red">Person decides</span><span class="exp">store short $97.50</span></td>
+      <td class="num" data-l="Ending"><span class="end red">Person decides</span><span class="exp amber">awaiting settlement $97.50</span></td>
+    </tr><tr class="red">
+      <td class="seq" data-l=""><span class="sid">5d</span> Bank capture accepted, and meanwhile the cashier takes cash and records it at the register<p class="reason red">The register shows a payment we did not record, and the bank also took $97.50 (pay_0002). Possible double collection: check how the register was paid before handing over or refunding.</p><p class="naive">Naive baseline, same fault: 1 debit, 1 order, register paid, and the shopper also paid 1 time at the counter; it reports “completed”.</p><p class="mline"><span class="end red">Person decides</span><br>1 submission, 1 debit, 1 order, register paid, none settled</p></td>
+      <td class="num" data-l="Kiosk submissions">1</td>
+      <td class="num" data-l="Debits the bank took">1</td>
+      <td class="num" data-l="Orders at the register">1</td>
+      <td class="num" data-l="Register shows paid">yes</td>
+      <td class="num" data-l="Money settled"><span class="dim">none settled</span></td>
+      <td class="num" data-l="Ending"><span class="end red">Person decides</span></td>
     </tr>
   </tbody>
   <tbody class="fam">
@@ -419,7 +436,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
       <td class="num" data-l="Money settled"><span class="dim">none settled</span></td>
       <td class="num" data-l="Ending"><span class="end ">Nothing charged</span></td>
     </tr><tr class="red">
-      <td class="seq" data-l=""><span class="sid">6d</span> Capture declined and the register refuses to cancel the unpaid order<p class="reason red">Unpaid order 3bbb388e could not be cancelled (inventory already allocated). Nothing was captured.</p><p class="mline"><span class="end red">Person decides</span><br>1 submission, 0 debits, 1 order, register unpaid, none settled</p></td>
+      <td class="seq" data-l=""><span class="sid">6d</span> Capture declined and the register refuses to cancel the unpaid order<p class="reason red">Unpaid order 6d72ebf5 could not be cancelled (inventory already allocated). Nothing was captured.</p><p class="mline"><span class="end red">Person decides</span><br>1 submission, 0 debits, 1 order, register unpaid, none settled</p></td>
       <td class="num" data-l="Kiosk submissions">1</td>
       <td class="num" data-l="Debits the bank took">0</td>
       <td class="num" data-l="Orders at the register">1</td>
@@ -429,9 +446,9 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
     </tr>
   </tbody>
   <tbody class="fam">
-    <tr class="fam-h"><th colspan="7" scope="rowgroup"><button type="button" class="fam-toggle" aria-expanded="true"><span class="fn">7</span> Refund races a bank return, including after a restart<span class="dem">Both outcomes recorded; no duplicate refund initiated locally; exposure stays visible.</span><span class="tally">4 sequences: 2 person decides, 1 refund refused, 1 recovered</span></button></th></tr>
+    <tr class="fam-h"><th colspan="7" scope="rowgroup"><button type="button" class="fam-toggle" aria-expanded="true"><span class="fn">7</span> Refund races a bank return, including after a restart<span class="dem">Both outcomes recorded; no duplicate refund initiated locally; exposure stays visible.</span><span class="tally">5 sequences: 2 person decides, 1 refund refused, 2 recovered</span></button></th></tr>
     <tr class="red">
-      <td class="seq" data-l=""><span class="sid">7a</span> Goods returned and refunded; the original debit also comes back R10<p class="reason red">Bank returned the debit (R10). Money was taken back from the store.</p><p class="note">Plaid documents this case publicly: a refunded debit can still be returned, and the merchant is debited for both. Who bears it is set by the provider contract.</p><p class="mline"><span class="end red">Person decides</span><span class="exp"> store short $97.50</span><br>1 submission, 1 debit, 1 order, register paid, +97.50 -97.50 -97.50 R10</p></td>
+      <td class="seq" data-l=""><span class="sid">7a</span> Goods returned and refunded; the original debit also comes back R10<p class="reason red">Bank returned the debit (R10). Money was taken back from the store.</p><p class="note">Plaid documents this case publicly: a refunded debit can still be returned, and the merchant is debited for both. Who bears it is set by the provider contract.</p><p class="mline"><span class="end red">Person decides</span><span class="exp">store short $97.50</span><br>1 submission, 1 debit, 1 order, register paid, +97.50 -97.50 -97.50 R10</p></td>
       <td class="num" data-l="Kiosk submissions">1</td>
       <td class="num" data-l="Debits the bank took">1</td>
       <td class="num" data-l="Orders at the register">1</td>
@@ -439,7 +456,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
       <td class="num" data-l="Money settled"><span class="mv ">+97.50</span> <span class="mv neg">-97.50</span> <span class="mv neg">-97.50 R10</span></td>
       <td class="num" data-l="Ending"><span class="end red">Person decides</span><span class="exp">store short $97.50</span></td>
     </tr><tr class="red">
-      <td class="seq" data-l=""><span class="sid">7d</span> An R01 return notice reaches us six days after settlement, after the 2-banking-day window<p class="reason red">Bank returned the debit (R01). Money was taken back from the store.</p><p class="note">Deadline for R01 after a 2026-09-29 settlement: 2026-10-01. The bank deadline is not the date our webhook arrives; the fact is kept either way.</p><p class="mline"><span class="end red">Person decides</span><br>1 submission, 1 debit, 1 order, register paid, +97.50 -97.50 R01</p></td>
+      <td class="seq" data-l=""><span class="sid">7d</span> An R01 return dated on its deadline, whose notice reaches us four days later<p class="reason red">Bank returned the debit (R01). Money was taken back from the store.</p><p class="note">Deadline for R01 after a 2026-09-29 settlement: 2026-10-01; the return is dated 2026-10-01, the notice arrived 2026-10-05. A late notice and a late return are different facts; both would be kept.</p><p class="mline"><span class="end red">Person decides</span><br>1 submission, 1 debit, 1 order, register paid, +97.50 -97.50 R01</p></td>
       <td class="num" data-l="Kiosk submissions">1</td>
       <td class="num" data-l="Debits the bank took">1</td>
       <td class="num" data-l="Orders at the register">1</td>
@@ -461,6 +478,14 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
       <td class="num" data-l="Orders at the register">1</td>
       <td class="num" data-l="Register shows paid">yes</td>
       <td class="num" data-l="Money settled"><span class="mv ">+97.50</span></td>
+      <td class="num" data-l="Ending"><span class="end ">Recovered</span></td>
+    </tr><tr class="">
+      <td class="seq" data-l=""><span class="sid">7e</span> Refund accepted, worker dies, the refund settles and its notice arrives before we wrote the reference<p class="mline"><span class="end ">Recovered</span><br>1 submission, 1 debit, 1 order, register paid, +97.50 -97.50</p></td>
+      <td class="num" data-l="Kiosk submissions">1</td>
+      <td class="num" data-l="Debits the bank took">1</td>
+      <td class="num" data-l="Orders at the register">1</td>
+      <td class="num" data-l="Register shows paid">yes</td>
+      <td class="num" data-l="Money settled"><span class="mv ">+97.50</span> <span class="mv neg">-97.50</span></td>
       <td class="num" data-l="Ending"><span class="end ">Recovered</span></td>
     </tr>
   </tbody>
@@ -508,7 +533,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 <table class="ord">
   <thead><tr><th scope="col">Same fault</th><th scope="col"><span class="sid">A</span> Debit, then create the order</th><th scope="col"><span class="sid">B</span> Create and confirm the order, then debit</th><th scope="col"><span class="sid">C</span> Preauthorize, confirm order and total, then capture (this module)</th></tr></thead>
   <tbody>
-  <tr><th scope="row">Register rejects the order</th><td data-l="A" class="red">Shopper debited; no order. Needs a refund.<span class="dim small">1 debit, 1 order</span></td><td data-l="B" class="">Order rejected before any debit. Nothing charged.<span class="dim small">0 debits, 1 order</span></td><td data-l="C" class="">The register rejected the order: item not in selling room. Nothing was captured.<span class="dim small">0 debits, 1 order</span></td></tr><tr><th scope="row">Bank declines the debit</th><td data-l="A" class="">Declined, nothing else happened.<span class="dim small">0 debits, 0 orders</span></td><td data-l="B" class="red">Debit declined; unpaid order left open, holding inventory until cancelled.<span class="dim small">0 debits, 1 order, 1 left unpaid</span></td><td data-l="C" class="">The bank declined the preauthorization (insufficient funds). Nothing was charged.<span class="dim small">0 debits, 0 orders</span></td></tr><tr><th scope="row">Register total is $6.00 above the quote</th><td data-l="A" class="red">Shopper debited the quote; register refuses it (total differs). Order open and unpaid.<span class="dim small">1 debit, 1 order, 1 left unpaid</span></td><td data-l="B" class="red">Completed, but the shopper was debited more than the kiosk showed.<span class="dim small">1 debit, 1 order</span></td><td data-l="C" class="red">The register total is $102.00 plus the $1.50 fee, above the $97.50 the shopper approved. Ask the shopper to approve the new total. Nothing was captured.<span class="dim small">0 debits, 1 order, 1 left unpaid</span></td></tr><tr><th scope="row">Register refuses the payment record</th><td data-l="A" class="red">Reports completed; the register shows the order unpaid.<span class="dim small">1 debit, 1 order, 1 left unpaid</span></td><td data-l="B" class="red">Reports completed; the register shows the order unpaid.<span class="dim small">1 debit, 1 order, 1 left unpaid</span></td><td data-l="C" class="red">Paid by bank ($97.50, pay 0002). The register does not show the payment (status: PaymentCannotBeApplied: Payment type not configured for this location). Do not collect again at the counter.<span class="dim small">1 debit, 1 order, 1 left unpaid</span></td></tr>
+  <tr><th scope="row">Register rejects the order</th><td data-l="A" class="red">Shopper debited; no order. Needs a refund.<span class="dim small">1 debit, 1 order</span></td><td data-l="B" class="">Order rejected before any debit. Nothing charged.<span class="dim small">0 debits, 1 order</span></td><td data-l="C" class="">The register rejected the order: item not in selling room. Nothing was captured.<span class="dim small">0 debits, 1 order</span></td></tr><tr><th scope="row">Bank declines the debit</th><td data-l="A" class="">Declined, nothing else happened.<span class="dim small">0 debits, 0 orders</span></td><td data-l="B" class="red">Debit declined; unpaid order left open, holding inventory until cancelled.<span class="dim small">0 debits, 1 order, 1 left unpaid</span></td><td data-l="C" class="">The bank declined the preauthorization (insufficient funds). Nothing was charged.<span class="dim small">0 debits, 0 orders</span></td></tr><tr><th scope="row">Register total is $6.00 above the quote</th><td data-l="A" class="red">Shopper debited the quote; register refuses it (total differs). Order open and unpaid.<span class="dim small">1 debit, 1 order, 1 left unpaid</span></td><td data-l="B" class="red">Completed, but the shopper was debited more than the kiosk showed.<span class="dim small">1 debit, 1 order</span></td><td data-l="C" class="red">The register total is $102.00 plus the $1.50 fee, above the $97.50 the shopper approved. Ask the shopper to approve the new total. Nothing was captured.<span class="dim small">0 debits, 1 order, 1 left unpaid</span></td></tr><tr><th scope="row">Register refuses the payment record</th><td data-l="A" class="red">Reports completed; the register shows the order unpaid.<span class="dim small">1 debit, 1 order, 1 left unpaid</span></td><td data-l="B" class="red">Reports completed; the register shows the order unpaid.<span class="dim small">1 debit, 1 order, 1 left unpaid</span></td><td data-l="C" class="red">Paid by bank ($97.50, pay_0002). The register does not show the payment (status: PaymentCannotBeApplied: Payment type not configured for this location). Do not collect again at the counter.<span class="dim small">1 debit, 1 order, 1 left unpaid</span></td></tr>
   </tbody>
 </table>
     <p class="ord-note">No order is safe on its own. C is chosen on two assumptions to confirm with the provider: preauthorization without funds movement, and capture of at most the preauthorized amount. What C introduces is the window between the capture and the register showing the order paid. That window is what the first screen of this page is about, and it is surfaced, never marked complete.</p>
@@ -522,8 +547,8 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
     <table class="routes">
       <thead><tr><th scope="col">Question</th><th scope="col">What the public source establishes</th><th scope="col">Still open</th><th scope="col">Blocks a pilot</th></tr></thead>
       <tbody>
-        <tr><td>Aeropay, embedded</td><td>White-label user creation by API; preauthorized transactions that move no funds until captured. <span class="src">dev.aero.inc</span></td><td>Recovery: for several return codes its help center sends the shopper to log in to Aeropay. Platform structure: its terms bar initiating transactions for others. Written position on licensed THC retail: its cannabis page now redirects to "specialized retail".</td><td class="block yes">Yes, until answered in writing</td></tr>
-        <tr><td>Aeropay, fee and returns</td><td>Consumer fee capped at what Aeropay charges the merchant; a non-guaranteed ACH option has the merchant reimburse all returns. <span class="src">Aeropay merchant terms</span></td><td>Which product a pilot would be on, and who is debited for a return.</td><td class="block yes">Yes, for the fee design</td></tr>
+        <tr><td>Aeropay, embedded</td><td>White-label user creation by API. Preauthorized transactions "do not initiate the movement of any funds, but instead store the details of a transaction that must be captured later by an employee." <span class="src">dev.aero.inc</span></td><td>How a kiosk with no employee at the moment of payment captures. Recovery: for several return codes its help center sends the shopper to log in to Aeropay. Platform structure: its terms bar initiating transactions for others. Written position on licensed THC retail: its cannabis page now redirects to "specialized retail".</td><td class="block yes">Yes, until answered in writing</td></tr>
+        <tr><td>Aeropay, fee and returns</td><td>Consumer fee capped at what Aeropay charges the merchant. Under non guaranteed ACH the merchant funds a reserve, reimburses all returns weekly by auto debit, "will not attempt to recover on any returned payments", and Aeropay "will retain 25% of the payments recovered". <span class="src">Aeropay merchant terms</span></td><td>Which product a pilot would be on, the reserve, and who is debited for a return.</td><td class="block yes">Yes, for the fee design</td></tr>
         <tr><td>CanPay RemotePay</td><td>Prepayment in merchants' apps by one-click payment or guest checkout; merchants can adjust amounts; kiosks listed. <span class="src">canpaydebit.com</span></td><td>Saved reference tied to the kiosk platform's shopper profile, returning shoppers, recovery, access for a platform, fees.</td><td class="block">Unknown</td></tr>
         <tr><td>Dutchie Pay by Bank</td><td>No funds reimbursement: a void or return in the POS does not reverse the payment; refunds in cash or store credit. <span class="src">Dutchie support</span></td><td>Whether a third-party kiosk can use it at all.</td><td class="block">For a Dutchie store</td></tr>
         <tr><td>Paid at the kiosk, seen at the register</td><td>Cova: CovaOrderPayment, amount must equal the sale total, paid orders cannot be cancelled. Dutchie: a preorder's payment happens at pickup; idempotency needs both ConsumerKey and IdempotencyKey. <span class="src">Cova API portal, Dutchie POS swagger</span></td><td>How each register shows a kiosk-paid order to the cashier, and whether a repeated submit or payment record is deduplicated.</td><td class="block yes">Yes</td></tr>
@@ -537,7 +562,8 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
         <ul>
           <li>Postgres schema with payment, money movements, order, register acknowledgment and handoff kept apart, and a reconciliation view.</li>
           <li>Short-transaction durable operations: claim, call outside any transaction, record with a claim token; same key on every retry.</li>
-          <li>Signed webhook ingestion, deduplicated by event and by fact; polling for missing webhooks.</li>
+          <li>Signed webhook ingestion, deduplicated by event and by fact. A reconciler reads the bank for captures until 60 days after settlement (the consumer return window) and for accepted refunds, so a lost notice is found.</li>
+          <li>The disclosed fee is set on the server; a fee sent by the kiosk is ignored.</li>
           <li>The eight failure families above, the naive baseline, and the order-of-operations comparison.</li>
           <li>Database roles: browser roles read and call nothing.</li>
         </ul>
@@ -555,7 +581,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
     </div>
 
     <h3>Where it ran</h3>
-    <p class="ran">Measures on this page: PGlite (Postgres 17.5 in WebAssembly) and a Postgres 18.6 server; the 28 sequences gave identical measures on both. Concurrency, restart recovery, lease fencing and roles: Postgres 18.6 server only (5 tests). The Edge Function's HTTP handler: tested under Deno 2.9.7, not in the Supabase Edge runtime, which was not run. Nothing was deployed to Supabase. This page is static and says nothing about the backend.</p>
+    <p class="ran">Measures on this page: PGlite (Postgres 17.5 in WebAssembly) and a Postgres 18.6 server; the 31 sequences gave identical measures on both. Concurrency, restart recovery, lease fencing, database roles and a whole checkout run as service_role: Postgres 18.6 server only (6 tests). The Edge Function's HTTP handler: tested under Deno 2.9.7, not in the Supabase Edge runtime, which was not run. Nothing was deployed to Supabase. This page is static and says nothing about the backend.</p>
 
     <p class="me">I built and tested this work sample. I have not built a production ACH system. It demonstrates the failure-handling approach, not a production payment track record. The next step I would propose is a small paid discovery milestone that ends with a route decision and acceptance criteria, including the possible answer that no route meets the requirement yet.</p>
   </div>
