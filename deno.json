@@ -1,0 +1,20 @@
+{
+  "tasks": {
+    "test": "deno test --allow-read --allow-env tests/",
+    "test:pg": "deno test --allow-read --allow-env --allow-net tests/",
+    "bench": "deno run --allow-read --allow-write --allow-env --allow-net bench/run.ts",
+    "check": "deno check src/ bench/ tests/ supabase/functions/kiosk-checkout/index.ts",
+    "site": "deno run --allow-read --allow-write site/build.ts"
+  },
+  "imports": {
+    "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.8",
+    "postgres": "npm:postgres@3.4.7",
+    "@std/assert": "jsr:@std/assert@1.0.13"
+  },
+  "fmt": {
+    "lineWidth": 110
+  },
+  "exclude": [
+    "site/dist/"
+  ]
+}

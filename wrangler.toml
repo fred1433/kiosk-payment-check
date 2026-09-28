@@ -1,0 +1,13 @@
+# Static page only. The Supabase module in this repository is not deployed anywhere.
+name = "kiosk-payments"
+main = "site/worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+routes = [
+  { pattern = "theaipipe.com/kiosk-payments*", zone_name = "theaipipe.com" }
+]
+
+[assets]
+directory = "./site/dist"
+binding = "ASSETS"
+html_handling = "auto-trailing-slash"
